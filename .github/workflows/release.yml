@@ -64,11 +64,18 @@ jobs:
         working-directory: dist
         run: |
           sha256sum --check Olympus-Windows-x64.zip.sha256
-          tag_ref=$(jq -nr --arg ref "tags/$RELEASE_TAG" '$ref | @uri')
+          tag_name=$(jq -nr --arg name "$RELEASE_TAG" '$name | @uri')
           verify_tag() {
-            local current
-            current=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag_ref" --jq '.sha')
-            if [[ -z "$TESTED_COMMIT" || "$current" != "$TESTED_COMMIT" ]]; then
+            local object type sha
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag_name" --jq '.object')
+            type=$(jq -er '.type' <<< "$object")
+            sha=$(jq -er '.sha' <<< "$object")
+            while [[ "$type" == tag ]]; do
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object')
+              type=$(jq -er '.type' <<< "$object")
+              sha=$(jq -er '.sha' <<< "$object")
+            done
+            if [[ "$type" != commit || -z "$TESTED_COMMIT" || "$sha" != "$TESTED_COMMIT" ]]; then
               echo 'The release tag no longer points to the tested commit.' >&2
               return 1
             fi
