@@ -148,9 +148,15 @@ namespace Olympus.Argus
         }
 
         static readonly Guid SoftLandingTrigger = new Guid("F47D8C53-0B74-4A66-959D-367710AB1F84");
-        static readonly Regex SoftLandingTask = new Regex(@"\ASoftLandingTriggerTask-(?<creative>[0-9]{18})-render-(?<instance>\{[0-9a-fA-F-]{36}\})\z");
+        // The task shapes Windows creates for this handler (seen 2026-11). Anything else from it goes to review.
+        static readonly Regex RenderTask = new Regex(@"\A(SoftLanding|ActionCenter)TriggerTask-(?<creative>[0-9]{18})-render-(?<instance>\{[0-9a-fA-F-]{36}\})\z");
+        static readonly Regex UnlockTipTask = new Regex(@"\ASoftLandingTriggerTask-(?<creative>WW_[0-9]{18}_[A-Za-z]{2,3}-[A-Za-z]{2,4})-systemStateChange-(?<instance>\{[0-9a-fA-F-]{36}\})\z");
+        static readonly string[] DataFields = { "TaskName", "CreativeId", "TriggerType", "ActionName", "OverrideRule", "TriggerId", "TriggerPredicate", "CorrelationId" };
 
-        public static bool IsSoftLandingRender(string target, string clsid, string taskPath, string principalSid, string data)
+        // Windows' tips handler (SoftLandingTask.exe) runs from per-user tasks that Windows keeps recreating
+        // under new IDs. It can take other actions, so only two observed shapes are routine, field for field:
+        // a "render" trigger that does nothing (noOp), and a tip bubble shown when the device is unlocked.
+        public static bool IsRoutineSoftLanding(string target, string clsid, string taskPath, string principalSid, string data)
         {
             Guid id;
             string server = Path.Combine(SystemApps, @"MicrosoftWindows.Client.CBS_cw5n1h2txyewy\SoftLandingTask\SoftLandingTask.exe");
@@ -160,16 +166,46 @@ namespace Olympus.Argus
             if (string.IsNullOrEmpty(principalSid) || taskPath == null || !taskPath.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            string name = taskPath.Substring(folder.Length);
-            var match = SoftLandingTask.Match(name);
-            if (!match.Success || !Guid.TryParseExact(match.Groups["instance"].Value, "B", out id)) return false;
+            string name = taskPath.Substring(folder.Length), trigger, action, triggerId;
+            var match = RenderTask.Match(name);
+            if (match.Success) { trigger = "render"; action = "noOp"; triggerId = ""; }
+            else
+            {
+                match = UnlockTipTask.Match(name);
+                if (!match.Success) return false;
+                trigger = "systemStateChange"; action = "ShowBubble"; triggerId = "WNF_SHEL_DEVICE_UNLOCKED";
+            }
+            if (!Guid.TryParseExact(match.Groups["instance"].Value, "B", out id)) return false;
 
-            // This Windows handler can take other actions. Only its observed render/noOp fields are routine.
-            string prefix = "TaskName:" + name.Length.ToString(CultureInfo.InvariantCulture) + "=" + name
-                + ";CreativeId:18=" + match.Groups["creative"].Value
-                + ";TriggerType:6=render;ActionName:4=noOp;OverrideRule:4=none;TriggerId:0=;TriggerPredicate:0=;CorrelationId:38=";
-            return data != null && data.Length == prefix.Length + 39 && data.StartsWith(prefix, StringComparison.Ordinal)
-                && data.EndsWith(";", StringComparison.Ordinal) && Guid.TryParseExact(data.Substring(prefix.Length, 38), "B", out id);
+            var f = ParseTaskData(data);
+            return f != null && f[0] == name && f[1] == match.Groups["creative"].Value && f[2] == trigger && f[3] == action
+                && f[4] == "none" && f[5] == triggerId && f[6].Length == 0
+                && f[7].Length == 38 && f[7].Trim() == f[7] && Guid.TryParseExact(f[7], "B", out id);
+        }
+
+        // The handler's data: "Field:length=value;" for exactly the eight known fields, in order, each length
+        // written plainly (no leading zeros). Null for anything else (another field, a wrong length, trailing text).
+        internal static string[] ParseTaskData(string data)
+        {
+            if (data == null) return null;
+            var values = new string[DataFields.Length];
+            int pos = 0;
+            for (int i = 0; i < DataFields.Length; i++)
+            {
+                string head = DataFields[i] + ":";
+                if (data.Length - pos < head.Length || string.CompareOrdinal(data, pos, head, 0, head.Length) != 0) return null;
+                pos += head.Length;
+                int eq = data.IndexOf('=', pos);
+                int length;
+                if (eq <= pos || eq - pos > 5 || (eq - pos > 1 && data[pos] == '0')
+                    || !int.TryParse(data.Substring(pos, eq - pos), NumberStyles.None, CultureInfo.InvariantCulture, out length))
+                    return null;
+                pos = eq + 1;
+                if (length > data.Length - pos - 1 || data[pos + length] != ';') return null;
+                values[i] = data.Substring(pos, length);
+                pos += length + 1;
+            }
+            return pos == data.Length ? values : null;
         }
     }
 }

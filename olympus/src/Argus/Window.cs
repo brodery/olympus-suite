@@ -78,17 +78,27 @@ namespace Olympus.Argus
 
         protected override void RefreshView()
         {
-            data = ArgusData.ForDisplay();
-            var st = StatusStore.Read(AppId.Argus);
-            ArgusAlertReview.ApplyStatus(st);
-            if (st == null) SetState(States.Off, "No scan yet — click Scan now");
-            else SetState(st.State, st.Summary);
-            StatusBar.Text = (st != null ? st.Detail + " · " : "") + "data: " + data.Dir;
+            // Status and rows from one folder (once installed, the engine's protected one, which the elevated
+            // actions change), and the summary from the very pending list the rows come from.
+            string from;
+            var st = ArgusAlertReview.ReadDisplayStatus(out from);
+            data = ArgusData.Load(from);
+            var visible = data.VisibleFindings();
+            if (!data.PendingReadable) SetState(States.Warn, "Can't read the list of changes right now; it refreshes in a moment");
+            else if (st == null && visible.Count == 0) SetState(States.Off, "No scan yet — click Scan now");
+            else
+            {
+                // No status to go by (yet), but findings on record: the summary comes from them.
+                var shown = st ?? new StatusInfo { State = States.Ok, Summary = "" };
+                ArgusAlertReview.ApplyFindings(shown, visible);
+                SetState(shown.State, shown.Summary);
+            }
+            StatusBar.Text = (st != null && st.Detail != null ? st.Detail + " · " : "") + "data: " + data.Dir;
 
             var rows = new List<ListViewItem>();
-            foreach (var f in data.VisibleFindings().OrderByDescending(x => Sev.Rank(x.Severity)).ThenByDescending(x => x.Seen, StringComparer.Ordinal))
+            foreach (var f in visible.OrderByDescending(x => Sev.Rank(x.Severity)).ThenByDescending(x => x.Seen, StringComparer.Ordinal))
             {
-                var it = Ui.Row(f.Key, Ui.SevWord(f.Severity), f.Kind, Engine.Noun(f.Now.Category), f.Now.Name, f.Now.SignedBy, f.Why ?? "");
+                var it = Ui.Row(f.Key, Ui.SevWord(f.Severity), f.Kind == "trust" ? "re-check" : f.Kind == "settings" ? "settings" : f.Kind, Engine.Noun(f.Now.Category), f.Now.Name, f.Now.SignedBy, f.Why ?? "");
                 it.ForeColor = Ui.SevColor(f.Severity);
                 rows.Add(it);
             }
@@ -177,14 +187,31 @@ namespace Olympus.Argus
         {
             string key = SelectedTag;
             if (key == null || tabs.SelectedIndex > 1) { Ui.Info(this, "Pick an entry first."); return; }
+            // On the To review tab, pin down the finding you're looking at before any question: the list can
+            // refresh while a question is open. If a scan has kept or replaced it by the time the action runs,
+            // Argus does nothing and says so. The Everything tab acts on the entry as it is now.
+            string alertId = null;
+            if (tabs.SelectedIndex == 0)
+            {
+                if (data == null || !data.Pending.ContainsKey(key)
+                    || !ArgusAlertReview.PendingIds(data.Pending.Values).TryGetValue(key, out alertId) || !ArgusAlertReview.IsAlertId(alertId))
+                {
+                    Ui.Info(this, "That change was already dealt with, or Argus can't tell which occurrence it is. The list will refresh.");
+                    RefreshNow();
+                    return;
+                }
+            }
             var it = Engine.Find(data, key);
+            // The entry exactly as shown, pinned down before any question too: a scan can record a replacement while
+            // a question or the admin prompt is open, and then nothing is changed.
+            string digest = it != null ? Engine.ReviewDigest(it) : null;
             if (action == "disable")
             {
                 if (it != null && !Engine.CanTurnOff(it)) { Ui.Info(this, it.Category == "extension" ? "Browsers don't let other programs switch extensions off. Open your browser's Extensions page and remove or disable it there." : "Argus can't turn this kind of entry off; change it by hand."); return; }
                 if (it != null && (it.Category == "service" || it.Category == "driver") && !Ui.Confirm(this, "Turn off the " + Engine.Noun(it.Category) + " \"" + it.Name + "\"?\n\nIt won't start any more (takes effect after a restart). If something stops working, use Undo on the Turned off tab.")) return;
                 if (it != null && !Ui.Confirm(this, "Turn off " + Engine.Noun(it.Category) + " \"" + it.Name + "\"?\n\nYou can put it back later from the Turned off tab.")) return;
             }
-            Run(action, key, null);
+            Run(action, key, null, alertId, null, digest);
         }
 
         void UndoSelected()
@@ -194,14 +221,20 @@ namespace Olympus.Argus
             var u = data.Undo.FirstOrDefault(x => x.Id == id);
             if (u == null || u.Undone) return;
             if (!Ui.Confirm(this, "Put back " + u.What + "?")) return;
-            Run("undo", u.Key, u.Id);
+            Run("undo", u.Key, u.Id, null, null, null);
         }
 
         void KeepAll()
         {
-            if (review.Items.Count == 0) return;
-            if (!Ui.Confirm(this, "Keep all " + review.Items.Count + " listed changes as they are? Only do this if you recognise them.")) return;
-            Run("accept-visible", null, null);
+            if (review.Items.Count == 0 || data == null) return;
+            // Exactly the rows listed now, captured before the question (the list can refresh meanwhile).
+            var ids = ArgusAlertReview.PendingIds(data.Pending.Values);
+            var listed = review.Items.Cast<ListViewItem>().Select(row => row.Tag as string)
+                .Select(k => { string id; return k != null && ids.TryGetValue(k, out id) ? id : null; })
+                .Where(ArgusAlertReview.IsAlertId).Distinct().ToList();
+            if (listed.Count == 0) return;
+            if (!Ui.Confirm(this, "Keep all " + listed.Count + " listed changes as they are? Only do this if you recognise them.")) return;
+            Run("accept-listed", null, null, null, string.Join(",", listed), null);
         }
 
         void DismissSelected()
@@ -216,10 +249,10 @@ namespace Olympus.Argus
             RefreshNow();
         }
 
-        void Run(string action, string key, string undoId)
+        void Run(string action, string key, string undoId, string alertId, string alertList, string digest)
         {
             StatusBar.Text = "Working…";
-            Ui.Background(this, () => Actions.Do(action, key, undoId), (err, ex) =>
+            Ui.Background(this, () => Actions.Do(action, key, undoId, alertId, alertList, digest), (err, ex) =>
             {
                 if (ex != null) err = ex.Message;
                 if (err != null) Ui.Warn(this, err);

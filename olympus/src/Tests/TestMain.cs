@@ -69,6 +69,7 @@ namespace Olympus.Tests
                 new KeyValuePair<string, Action>("argus", ArgusTests.Run),
                 new KeyValuePair<string, Action>("argus-alert-review", ArgusAlertReviewTests.Run),
                 new KeyValuePair<string, Action>("packaged-com", PackagedComTests.Run),
+                new KeyValuePair<string, Action>("routine-updates", RoutineUpdateTests.Run),
                 new KeyValuePair<string, Action>("sibyl", SibylTests.Run),
                 new KeyValuePair<string, Action>("later", LaterTests.Run),
                 new KeyValuePair<string, Action>("atlas", AtlasTests.Run),

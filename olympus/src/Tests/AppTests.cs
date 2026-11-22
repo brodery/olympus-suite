@@ -35,8 +35,10 @@ namespace Olympus.Tests
             proxy.Extra["enabled"] = "no";
             proxy.Extra["pac"] = "";
             T.Eq(Sev.Info, Engine.Rate(proxy, "changed", null, out why), "rate: proxy off is routine");
-            var ms = new Item { Category = "task", Command = "x", Target = notepad, Signed = true, Trusted = true, Microsoft = true, Signer = "Microsoft Windows" };
-            T.Eq(Sev.Info, Engine.Rate(ms, "new", null, out why), "rate: Microsoft-signed task is routine");
+            var ms = new Item { Category = "task", Command = "\"" + notepad + "\"", Target = notepad, Signed = true, Trusted = true, Microsoft = true, Signer = "Microsoft Windows" };
+            ms.Extra["actions"] = "1";
+            ms.Extra["action"] = "exec";
+            T.Eq(Sev.Info, Engine.Rate(ms, "new", null, out why), "rate: a one-action task running a Microsoft program from System32 is routine");
 
             var legacy = new Finding
             {
@@ -46,21 +48,21 @@ namespace Olympus.Tests
             ms.Key = legacy.Key;
             ms.Hash = legacy.Now.Hash;
             ms.Extra["inboxCom"] = "yes";
-            T.True(Engine.CanRetireMissingComNotice(legacy, ms, null), "packaged COM: retire an unchanged legacy missing-file notice");
-            T.True(Engine.CanRetireMissingComNotice(legacy, ms, new BaselineEntry { Hash = ms.Hash }), "packaged COM: retry after an interrupted save");
-            T.True(!Engine.CanRetireMissingComNotice(legacy, ms, new BaselineEntry { Hash = "different" }), "packaged COM: a real baseline change needs review");
+            T.True(Engine.CanRetireComNotice(legacy, ms, null), "packaged COM: retire an unchanged legacy missing-file notice");
+            T.True(Engine.CanRetireComNotice(legacy, ms, new BaselineEntry { Hash = ms.Hash }), "packaged COM: retry after an interrupted save");
+            T.True(!Engine.CanRetireComNotice(legacy, ms, new BaselineEntry { Hash = "different" }), "packaged COM: a real baseline change needs review");
             ms.Extra["comActionsUnverified"] = "yes";
             T.Eq(Sev.Notice, Engine.Rate(ms, "new", null, out why), "packaged COM: unverified actions still require review");
-            T.True(!Engine.CanRetireMissingComNotice(legacy, ms, null), "packaged COM: retirement needs full verification");
+            T.True(!Engine.CanRetireComNotice(legacy, ms, null), "packaged COM: retirement needs full verification");
             ms.Extra.Remove("comActionsUnverified");
             ms.Trusted = false;
-            T.True(!Engine.CanRetireMissingComNotice(legacy, ms, null), "packaged COM: registry identity alone is insufficient");
+            T.True(!Engine.CanRetireComNotice(legacy, ms, null), "packaged COM: registry identity alone is insufficient");
             ms.Trusted = true;
             ms.Hash = "different";
-            T.True(!Engine.CanRetireMissingComNotice(legacy, ms, null), "packaged COM: a changed task is still a finding");
+            T.True(!Engine.CanRetireComNotice(legacy, ms, null), "packaged COM: a changed task is still a finding");
             ms.Hash = legacy.Now.Hash;
             legacy.Severity = Sev.Warning;
-            T.True(!Engine.CanRetireMissingComNotice(legacy, ms, null), "packaged COM: never retire unrelated warnings");
+            T.True(!Engine.CanRetireComNotice(legacy, ms, null), "packaged COM: never retire unrelated warnings");
             var trustedCom = new BaselineEntry { Hash = ms.Hash, Command = ms.Command, ComDataHash = "original-data" };
             ms.Extra["comDataHash"] = trustedCom.ComDataHash;
             T.True(!Engine.PackagedComChanged(trustedCom, ms), "packaged COM: identical verified data stays routine");

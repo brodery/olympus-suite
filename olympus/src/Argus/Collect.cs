@@ -19,6 +19,7 @@ namespace Olympus.Argus
     public sealed class Item
     {
         public string Key, Category, Name, Location, Command, Target, Signer, User, Why, Hash, HashBasis;
+        public string SignerId;   // SignerInfo.Id of a validly signed target
         public bool Signed, Trusted, Microsoft, Missing, Enabled = true;
 
         // For lists: who signed it, or why there's no answer.
@@ -31,6 +32,13 @@ namespace Olympus.Argus
         {
             string v;
             return Extra != null && Extra.TryGetValue(k, out v) ? v : null;
+        }
+
+        public Item Copy()
+        {
+            var c = (Item)MemberwiseClone();
+            c.Extra = Extra == null ? new Dictionary<string, string>() : new Dictionary<string, string>(Extra);
+            return c;
         }
     }
 
@@ -120,6 +128,10 @@ namespace Olympus.Argus
         readonly List<Item> items = new List<Item>();
         public readonly List<string> Problems = new List<string>();
         public readonly HashSet<string> Failed = new HashSet<string>();   // kinds that couldn't be read this time
+        // Kinds read only partly (an entry failed and Argus can't tell which), and keys of single entries that
+        // failed to read. Neither may be taken as gone this time.
+        public readonly HashSet<string> Partial = new HashSet<string>();
+        public readonly HashSet<string> Unreadable = new HashSet<string>();
         public static readonly string[] Kinds =
         {
             "run", "startup", "task", "service", "driver", "extension", "policy", "proxy", "hosts", "dns",
@@ -150,6 +162,32 @@ namespace Olympus.Argus
             Safe("program hijacks (IFEO)", Ifeo, "ifeo");
             Safe("sign-in hooks", Winlogon, "winlogon");
             Safe("Active Setup", ActiveSetup, "activesetup");
+            return items;
+        }
+
+        // One kind of entry, read now (for checking an entry again right before Argus changes it). Errors aren't
+        // caught: a kind that can't be read can't vouch for anything.
+        public List<Item> Only(string kind)
+        {
+            hives = Hives();
+            switch (kind)
+            {
+                case "run": RunKeys(); break;
+                case "startup": StartupFolders(); break;
+                case "task": Tasks(); break;
+                case "service": case "driver": Services(); break;
+                case "extension": Extensions(); break;
+                case "policy": Policies(); break;
+                case "proxy": Proxy(); break;
+                case "hosts": Hosts(); break;
+                case "dns": Dns(); break;
+                case "rootcert": case "authroot": RootCerts(); break;
+                case "wmi": Wmi(); break;
+                case "ifeo": Ifeo(); break;
+                case "winlogon": Winlogon(); break;
+                case "activesetup": ActiveSetup(); break;
+                default: throw new InvalidOperationException("Argus doesn't know entries of kind " + kind);
+            }
             return items;
         }
 
@@ -227,10 +265,12 @@ namespace Olympus.Argus
                     if (k == null) continue;
                     foreach (var v in new[] { "Load", "Run" })
                     {
-                        string s = k.GetValue(v) as string;
+                        // As written (REG_EXPAND_SZ unexpanded): expanding here would use SYSTEM's environment.
+                        string s = Reg.Text(k.GetValue(v, null, RegistryValueOptions.DoNotExpandEnvironmentNames));
                         if (string.IsNullOrWhiteSpace(s)) continue;
                         var it = Add("run", h.Prefix + @"\Software\Microsoft\Windows NT\CurrentVersion\Windows", v, s, h.Sid);
                         it.Extra["value"] = v;
+                        it.Extra["kind"] = KindOf(k, v);
                     }
                 }
             }
@@ -248,10 +288,19 @@ namespace Olympus.Argus
                     if (string.IsNullOrWhiteSpace(s)) continue;
                     var it = Add(cat, prefix + "\\" + path, name.Length == 0 ? "(Default)" : name, s, user);
                     it.Extra["value"] = name;
+                    it.Extra["kind"] = KindOf(k, name);
                     var flag = approved == null ? null : approved.GetValue(name) as byte[];
                     if (flag != null && flag.Length > 0 && (flag[0] & 1) == 1) it.Enabled = false;   // switched off in Task Manager
                 }
             }
+        }
+
+        // The registry value's type (String, ExpandString, ...): Windows expands environment variables only in
+        // an ExpandString, so the same text can mean another program.
+        static string KindOf(RegistryKey k, string name)
+        {
+            try { return k.GetValueKind(name).ToString(); }
+            catch (Exception) { return "?"; }
         }
 
         void StartupFolders()
@@ -302,8 +351,15 @@ namespace Olympus.Argus
             for (int i = 1; i <= n; i++)
             {
                 object task = null;
-                try { task = Com.Index(tasks, i); OneTask(task); }
-                catch (Exception e) { if (Problems.Count < 50) Log.Warn("reading a task: " + e.Message); }
+                string path = null;
+                try { task = Com.Index(tasks, i); path = Com.Get(task, "Path") as string; OneTask(task); }
+                catch (Exception e)
+                {
+                    // Keep what's known about a task that failed to read, rather than calling it gone.
+                    if (string.IsNullOrEmpty(path)) Partial.Add("task");
+                    else Unreadable.Add("task|" + path.Substring(0, Math.Max(1, path.LastIndexOf('\\'))) + "|" + path);
+                    if (Problems.Count < 50) Log.Warn("reading a task: " + e.Message);
+                }
                 finally { Com.Release(task); }
             }
             Com.Release(tasks);
@@ -325,7 +381,8 @@ namespace Olympus.Argus
             object actions = Com.Get(def, "Actions");
             int n = (int)Com.Get(actions, "Count");
             var cmds = new List<string>();
-            string target = null;
+            var parts = new List<string>();   // every action in full, in order, for the entry hash
+            string target = null, workdir = null, firstType = null;
             string packagedClass = null, actionData = null;
             bool hasCom = false, allCom = n > 0, inbox = false, unreadableData = false;
             for (int i = 1; i <= n; i++)
@@ -335,24 +392,28 @@ namespace Olympus.Argus
                 {
                     int type = (int)Com.Get(a, "Type");
                     if (type != 5) allCom = false;
+                    if (firstType == null) firstType = type == 0 ? "exec" : type == 5 ? "com" : "other";
                     if (type == 0)
                     {
                         // tasks often store the program path with its own quotes around it
                         string exe = ((Com.Get(a, "Path") as string) ?? "").Trim().Trim('"'), args = Com.Get(a, "Arguments") as string;
+                        string wd = (Com.Get(a, "WorkingDirectory") as string) ?? "";
                         cmds.Add(Proc.Quote(exe) + (string.IsNullOrEmpty(args) ? "" : " " + args));
+                        parts.Add(Field("exec") + Field(exe) + Field(args) + Field(wd));
                         if (target == null && exe.Length > 0) target = Targets.Resolve(Proc.Quote(exe) + (string.IsNullOrEmpty(args) ? "" : " " + args));
+                        if (workdir == null) workdir = wd;
                     }
                     else if (type == 5)
                     {
                         hasCom = true;
                         string clsid = Com.Get(a, "ClassId") as string;
-                        string dll = ComServer(clsid);
+                        string dll = ComServer(clsid), server = null;
                         cmds.Add("COM handler " + clsid + (dll != null ? " (" + dll + ")" : ""));
                         if (target == null && dll != null) target = Targets.Resolve(dll);
                         if (dll == null)
                         {
                             bool fromInbox;
-                            var server = PackagedCom.Resolve(clsid, out fromInbox);
+                            server = PackagedCom.Resolve(clsid, out fromInbox);
                             if (server != null)
                             {
                                 packagedClass = clsid;
@@ -360,18 +421,27 @@ namespace Olympus.Argus
                                 if (target == null) target = server;
                             }
                         }
-                        if (n == 1)
+                        // Every COM action's data counts toward the entry (a digest, or that it couldn't be read).
+                        string data = null;
+                        bool dataUnreadable;
+                        try
                         {
-                            try
-                            {
-                                var value = Com.Get(a, "Data");
-                                actionData = value as string;
-                                unreadableData = value != null && actionData == null;
-                            }
-                            catch (Exception) { unreadableData = true; }
+                            var value = Com.Get(a, "Data");
+                            data = value as string;
+                            dataUnreadable = value != null && data == null;
                         }
+                        catch (Exception) { dataUnreadable = true; }
+                        if (n == 1) { actionData = data; unreadableData = dataUnreadable; }
+                        // The class, the server it's registered to (a classic DLL as written, or the packaged
+                        // server), and its data.
+                        parts.Add(Field("com") + Field(clsid) + Field(dll ?? "") + Field(server ?? "")
+                            + Field(dataUnreadable ? "unreadable" : FileUtil.Sha256Text(data ?? "")));
                     }
-                    else cmds.Add("action type " + type);
+                    else
+                    {
+                        cmds.Add("action type " + type);
+                        parts.Add(Field("type") + Field(type.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    }
                 }
                 finally { Com.Release(a); }
             }
@@ -379,13 +449,15 @@ namespace Olympus.Argus
             object principal = Com.Get(def, "Principal");
             string author = Com.Get(reg, "Author") as string;
             string runAs = Com.Get(principal, "UserId") as string;
+            string group = Com.Get(principal, "GroupId") as string;
+            int logon = (int)Com.Get(principal, "LogonType");
             int level = (int)Com.Get(principal, "RunLevel");
             bool safeData = !unreadableData && string.IsNullOrEmpty(actionData);
             bool trustedPackage = false;
             if (n == 1 && inbox && !unreadableData)
             {
                 string sid = PackagedCom.PrincipalWithoutOverride(runAs, (int)Com.Get(principal, "LogonType"), packagedClass);
-                trustedPackage = sid != null && (safeData || PackagedCom.IsSoftLandingRender(target, packagedClass, path, sid, actionData));
+                trustedPackage = sid != null && (safeData || PackagedCom.IsRoutineSoftLanding(target, packagedClass, path, sid, actionData));
             }
             Com.Release(reg); Com.Release(principal); Com.Release(actions); Com.Release(def);
             string folder = path.Substring(0, Math.Max(1, path.LastIndexOf('\\')));
@@ -398,13 +470,33 @@ namespace Olympus.Argus
                 it.Extra["inboxCom"] = "yes";
                 it.Extra["comDataHash"] = FileUtil.Sha256Text(actionData ?? "");
             }
+            // The raw data of a single COM action, verified or not, so a notice about it can tell later
+            // whether the data it was raised for is still the same.
+            if (hasCom && n == 1 && !unreadableData) it.Extra["comRawHash"] = FileUtil.Sha256Text(actionData ?? "");
             if (hasCom && (n != 1 || (!trustedPackage && (!safeData || packagedClass != null))))
                 it.Extra["comActionsUnverified"] = "yes";
             it.Extra["path"] = path;
             it.Extra["author"] = author ?? "";
             it.Extra["runas"] = runAs ?? "";
             it.Extra["highest"] = level == 1 ? "yes" : "no";
-            it.HashBasis = it.Command + "|" + it.Extra["runas"] + "|" + it.Extra["highest"];
+            it.Extra["actions"] = n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (firstType != null) it.Extra["action"] = firstType;
+            if (!string.IsNullOrEmpty(workdir)) it.Extra["workdir"] = workdir;
+            it.Extra["logon"] = logon.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!string.IsNullOrEmpty(group)) it.Extra["group"] = group;
+            // Every action (program, arguments and working folder; or COM class, server and a digest of its data),
+            // who it runs as and how all count as part of the entry, so changing any of them is a change to
+            // review. Each field carries its length, so no text inside one can pass for a boundary.
+            // (Engine.Scan moves entries hashed the older way over silently.)
+            it.HashBasis = Field(parts.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)) + string.Concat(parts)
+                + Field(it.Extra["runas"]) + Field(it.Extra["highest"]) + Field(it.Extra["logon"]) + Field(group ?? "");
+        }
+
+        // A field for an entry hash: its length, a colon, then the text.
+        internal static string Field(string s)
+        {
+            s = s ?? "";
+            return s.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + s;
         }
 
         static string ComServer(string clsid)
@@ -431,7 +523,13 @@ namespace Olympus.Argus
                 {
                     RegistryKey opened;
                     try { opened = root.OpenSubKey(name); }
-                    catch (Exception) { continue; }   // a few services hide their key from non-admins
+                    catch (Exception)
+                    {
+                        // A few services hide their key from non-admins; either way, not readable isn't gone.
+                        Unreadable.Add(@"service|HKLM\SYSTEM\CurrentControlSet\Services|" + name);
+                        Unreadable.Add(@"driver|HKLM\SYSTEM\CurrentControlSet\Services|" + name);
+                        continue;
+                    }
                     using (var k = opened)
                     {
                         if (k == null) continue;
@@ -453,6 +551,9 @@ namespace Olympus.Argus
                         var it = Add(driver ? "driver" : "service", @"HKLM\SYSTEM\CurrentControlSet\Services", name, image + (dll != null ? "  [" + dll + "]" : ""), "");
                         it.Extra["service"] = name;
                         it.Extra["start"] = StartName(start);
+                        it.Extra["type"] = type.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        string account = k.GetValue("ObjectName") as string;
+                        if (!string.IsNullOrEmpty(account)) it.Extra["account"] = account;
                         string display = k.GetValue("DisplayName") as string;
                         if (!string.IsNullOrEmpty(display) && !display.StartsWith("@")) it.Extra["display"] = display;
                         it.Enabled = start != 4;

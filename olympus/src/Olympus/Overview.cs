@@ -72,9 +72,11 @@ namespace Olympus.Hub
         static AppState FromStatus(AppInfo app)
         {
             var st = new AppState { App = app };
-            var s = StatusStore.Read(app.Id);
+            string from;
+            // Argus's status from the folder its findings are shown from (the installed engine's, once installed).
+            var s = app.Id == AppId.Argus ? ArgusAlertReview.ReadDisplayStatus(out from) : StatusStore.Read(app.Id, out from);
             if (app.Id == AppId.Arachne) ArachneAlertReview.ApplyStatus(s, ArachneAlertReview.Open(200));
-            if (app.Id == AppId.Argus) ArgusAlertReview.ApplyStatus(s);
+            if (app.Id == AppId.Argus) ArgusAlertReview.ApplyStatus(s, from);
             bool exe = File.Exists(Suite.ExeOf(app.Id));
             if (s == null)
             {
@@ -312,14 +314,22 @@ namespace Olympus.Hub
                 string exe = installed && app.SystemEngine ? Path.Combine(Suite.InstallDir, app.Name + ".exe") : Suite.ExeOf(app.Id);
                 if (!File.Exists(exe)) return "Couldn't find " + app.Name + " at " + exe;
                 string args = "--action " + act.Id + " --alert " + a.Id;
+                // Argus exits with 3 when a scan had already kept or replaced the finding behind the alert, and with 4
+                // when Turn off found the entry registered differently from what the alert showed.
+                const string handled = "Argus had already dealt with this change (a newer scan kept or replaced it), so nothing was changed.";
+                const string changed = "That entry changed since Argus reported it, so nothing was changed. Argus's next scan shows it as it is now.";
                 if (elevate)
                 {
                     int r = Elevation.Run(exe, args, true);
                     if (r == -1) return "Cancelled: Windows asked for admin rights and the request was declined.";
+                    if (r == 3 && app.Id == AppId.Argus) return handled;
+                    if (r == 4 && app.Id == AppId.Argus) return changed;
                     return r == 0 ? null : app.Name + " couldn't do that (code " + r + "). See its log for details.";
                 }
                 string output;
                 int code = Proc.Run(exe, args, out output, 120000);
+                if (code == 3 && app.Id == AppId.Argus) return handled;
+                if (code == 4 && app.Id == AppId.Argus) return changed;
                 return code == 0 ? null : (output.Trim().Length > 0 ? output.Trim() : app.Name + " couldn't do that (code " + code + ").");
             }
             catch (Exception e) { return e.Message; }

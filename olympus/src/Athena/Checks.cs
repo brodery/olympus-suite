@@ -403,8 +403,12 @@ namespace Olympus.Athena
             {
                 var app = AppInfo.Of(id);
                 var c = C("Olympus", "g-" + app.Key, app.Name + " (" + app.Role + ")");
-                var s = StatusStore.Read(id);
+                string from;
+                // Argus's status from the folder its findings are shown from (the installed engine's, once installed).
+                var s = id == AppId.Argus ? ArgusAlertReview.ReadDisplayStatus(out from) : StatusStore.Read(id, out from);
+                // Grade what's still open, as the hub shows it: alerts you dismissed don't count.
                 if (id == AppId.Arachne) ArachneAlertReview.ApplyStatus(s, ArachneAlertReview.Open(200));
+                if (id == AppId.Argus) ArgusAlertReview.ApplyStatus(s, from);
                 TimeSpan max = id == AppId.Argus ? TimeSpan.FromMinutes(30) : TimeSpan.FromMinutes(20);
                 if (s == null) { c.State = "warn"; c.Detail = "Hasn't run yet"; }
                 else if (DateTime.UtcNow - s.UpdatedUtc > max) { c.State = "warn"; c.Detail = "Not running (last report " + Fmt.Ago(s.UpdatedUtc) + ")"; }

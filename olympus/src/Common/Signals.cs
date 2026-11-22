@@ -81,11 +81,19 @@ namespace Olympus
         // The freshest status of an app, from either of its data folders.
         public static StatusInfo Read(AppId id)
         {
+            string dir;
+            return Read(id, out dir);
+        }
+
+        // The same, plus the folder it came from, so data that goes with that status is read from there too.
+        public static StatusInfo Read(AppId id, out string from)
+        {
             StatusInfo best = null;
+            from = null;
             foreach (var dir in new[] { Suite.SharedDir(id), Suite.UserDir(id) })
             {
                 var s = J.Load<StatusInfo>(Path.Combine(dir, FileName));
-                if (s != null && (best == null || s.UpdatedUtc > best.UpdatedUtc)) best = s;
+                if (s != null && (best == null || s.UpdatedUtc > best.UpdatedUtc)) { best = s; from = dir; }
             }
             return best;
         }
@@ -131,8 +139,10 @@ namespace Olympus
             return new AlertInfo { Severity = severity, Title = title, Body = body, Key = key };
         }
 
-        public static void Raise(AlertInfo a)
+        // True once the alert is written to the log (false: it couldn't be, and the error is logged).
+        public static bool Raise(AlertInfo a)
         {
+            bool written = false;
             a.App = Suite.Me.Name;
             if (a.Id == null) a.Id = Guid.NewGuid().ToString("N").Substring(0, 16);
             a.Time = Clock.NowIso();
@@ -160,6 +170,7 @@ namespace Olympus
                     var b = Encoding.UTF8.GetBytes(J.Write(a) + "\n");
                     fs.Write(b, 0, b.Length);
                 }
+                written = true;
                 Log.Info("alert (" + a.Severity + "): " + a.Title);
             }
             catch (Exception e) { Log.Error("raising alert", e); }
@@ -171,6 +182,7 @@ namespace Olympus
                     m.Dispose();
                 }
             }
+            return written;
         }
 
         // Complete lines added since offset (also reads the tail of a file rotated in between).
@@ -232,6 +244,21 @@ namespace Olympus
                 ReadFrom(Path.Combine(dir, FileName), 0, all);
             }
             return all.Where(a => a != null).OrderByDescending(a => a.Time, StringComparer.Ordinal).Take(max).ToList();
+        }
+
+        // The alerts only an installed SYSTEM engine could have written: its ProgramData logs, read only while
+        // they are protected (nothing else can add to them). Newest first.
+        public static List<AlertInfo> RecentProtected(AppId id)
+        {
+            var all = new List<AlertInfo>();
+            var dir = Suite.SharedDir(id);
+            if (!IsProtected(Suite.ProgramDataRoot, true) || !IsProtected(dir, true)) return all;
+            foreach (string name in new[] { OldName, FileName })
+            {
+                var file = Path.Combine(dir, name);
+                if (File.Exists(file) && IsProtected(file, false)) ReadFrom(file, 0, all);
+            }
+            return all.Where(a => a != null).OrderByDescending(a => a.Time, StringComparer.Ordinal).ToList();
         }
 
         public static AlertInfo Find(AppId id, string alertId)
