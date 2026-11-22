@@ -159,11 +159,8 @@ namespace Olympus.Hub
 
             ListenFor("hub.show", ShowDashboard);
             ListenFor("hub.exit", ExitThread);
-            ListenFor(ArachneAlertReview.ChangedSignal, () =>
+            ListenFor(AlertReview.ChangedSignal, () =>
             {
-                var dismissed = ArachneAlertReview.DismissedIds();
-                pending.RemoveAll(a => a.App == "Arachne" && dismissed.Contains(a.Id));
-                held.RemoveAll(a => a.App == "Arachne" && dismissed.Contains(a.Id));
                 if (AlertsArrived != null) AlertsArrived();
                 SlowTick();
             });
@@ -385,11 +382,19 @@ namespace Olympus.Hub
                     if (off != before) { st.Offsets[dir] = off; moved = true; }
                 }
             if (moved) Inbox.Save();
+            if (fresh.Count + pending.Count + held.Count > 0)
+            {
+                var dismissed = AlertReview.DismissedIds();
+                var resolved = ArgusAlertReview.ResolvedIds();
+                Predicate<AlertInfo> reviewed = a => a == null || dismissed.Contains(a.Id)
+                    || (a.App == AppInfo.Of(AppId.Argus).Name && resolved.Contains(a.Id));
+                pending.RemoveAll(reviewed);
+                held.RemoveAll(reviewed);
+                fresh.RemoveAll(reviewed);
+            }
             if (fresh.Count > 0)
             {
-                var dismissed = fresh.Any(a => a != null && a.App == "Arachne") ? ArachneAlertReview.DismissedIds() : null;
-                foreach (var a in fresh)
-                    if (a == null || a.App != "Arachne" || !dismissed.Contains(a.Id)) Route(a);
+                foreach (var a in fresh) Route(a);
                 if (AlertsArrived != null) AlertsArrived();
                 SlowTick();
             }

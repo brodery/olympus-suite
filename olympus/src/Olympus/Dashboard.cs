@@ -65,7 +65,7 @@ namespace Olympus.Hub
             head.Controls.Add(Ui.Btn("Dismiss", (s, e) => DismissSelected()));
             head.Controls.Add(Ui.Btn("Dismiss all shown", (s, e) =>
             {
-                if (shown.Count > 0 && Ui.Confirm(this, "Dismiss all " + shown.Count + " alerts in the list?")) { Inbox.Dismiss(shown.Select(a => a.Id)); LoadAlerts(); }
+                if (shown.Count > 0 && Ui.Confirm(this, "Dismiss all " + shown.Count + " alerts in the list?")) DismissAlerts(shown.Select(a => a.Id));
             }));
             layout.Controls.Add(head, 0, 1);
 
@@ -81,7 +81,7 @@ namespace Olympus.Hub
             alertDetail.BackColor = SystemColors.Control;
             alertDetail.Dock = DockStyle.Fill;
             alertDetail.Height = Ui.S(58);
-            alertDetail.ScrollBars = ScrollBars.None;
+            alertDetail.ScrollBars = ScrollBars.Vertical;
             alertDetail.Text = "Select an alert to see what happened and what you can do about it.";
             detail.Controls.Add(alertDetail, 0, 0);
             alertButtons.AutoSize = true;
@@ -199,23 +199,29 @@ namespace Olympus.Hub
 
         void RunAction(AlertInfo a, AlertAction act)
         {
+            if ((act.Id == "disable" || act.Id == "allow" || act.Id == "block" ||
+                act.Id == "kill" || act.Id == "ignore" || act.Id == "delete") &&
+                !Ui.Confirm(this, act.Label + "?\n\n" + a.Title + "\n\n" + a.Body)) return;
             StatusBar.Text = "Working: " + act.Label + "…";
             Ui.Background(this, () => Launch.Action(a, act), (msg, err) =>
             {
                 if (err != null) msg = err.Message;
                 if (msg != null) { StatusBar.Text = "Didn't finish: " + act.Label; Ui.Warn(this, msg); return; }
                 StatusBar.Text = "Done: " + act.Label + " (" + a.App + ")";
-                Inbox.Dismiss(new[] { a.Id });
-                detailFor = null;
-                LoadAlerts();
+                if (act.Id != "show" && act.Id != "scan" && act.Id != "retry") DismissAlerts(new[] { a.Id });
             });
         }
 
         void DismissSelected()
         {
             var ids = alerts.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag as string).Where(x => x != null).ToList();
-            if (ids.Count == 0) return;
-            Inbox.Dismiss(ids);
+            if (ids.Count > 0) DismissAlerts(ids);
+        }
+
+        void DismissAlerts(IEnumerable<string> ids)
+        {
+            try { AlertReview.Dismiss(ids); }
+            catch (Exception e) { Ui.Warn(this, "Couldn't save the dismissal. " + e.Message); return; }
             detailFor = null;
             LoadAlerts();
         }

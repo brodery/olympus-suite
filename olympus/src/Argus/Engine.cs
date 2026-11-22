@@ -22,9 +22,9 @@ namespace Olympus.Argus
         public bool Trusted;
     }
 
-    public sealed class Finding
+    public sealed class Finding : ArgusPendingAlert
     {
-        public string Key, Kind, Severity, Why, Seen, AlertId;
+        public string Kind, Why;
         public Item Now;
         public BaselineEntry Before;
     }
@@ -110,8 +110,14 @@ namespace Olympus.Argus
         // What the window shows: the installed (SYSTEM) data if there is any, else yours.
         public static ArgusData ForDisplay()
         {
-            string shared = Suite.SharedDir(AppId.Argus);
-            return File.Exists(Path.Combine(shared, "baseline.json")) ? Load(shared) : Load(Suite.UserDir(AppId.Argus));
+            return Load(ArgusAlertReview.DisplayDirectory);
+        }
+
+        public List<Finding> VisibleFindings()
+        {
+            var ids = ArgusAlertReview.PendingIds(Pending.Values);
+            var dismissed = AlertReview.DismissedIds();
+            return Pending.Values.Where(f => !dismissed.Contains(ids[f.Key])).ToList();
         }
     }
 
@@ -370,7 +376,7 @@ namespace Olympus.Argus
                 foreach (var it in items) if (it.Hash != null && !now.ContainsKey(it.Key)) now[it.Key] = it;
                 var res = new ScanResult { Entries = now.Count, Problems = col.Problems, First = data.Baseline.Count == 0 };
                 var fresh = new List<Finding>();
-                var resolvedAlerts = new List<string>();
+                var previousAlerts = ArgusAlertReview.PendingIds(data.Pending.Values);
                 // An area seen in full for the first time (it failed to read before) is just recorded;
                 // an area that failed to read now keeps its entries rather than calling them removed.
                 var complete = new HashSet<string>((data.Complete ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries));
@@ -400,7 +406,6 @@ namespace Olympus.Argus
                         {
                             data.Baseline[it.Key] = Entry(it);
                             data.Pending.Remove(it.Key);
-                            if (!string.IsNullOrEmpty(p.AlertId)) resolvedAlerts.Add(p.AlertId);
                             res.Auto++;
                             data.History("auto", it.Key, "Verified the Windows package handler for " + it.Name);
                             continue;
@@ -470,12 +475,18 @@ namespace Olympus.Argus
                 data.Current = now.Values.OrderBy(i => i.Category).ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList();
                 data.LastScan = Clock.NowIso();
                 res.Took = DateTime.UtcNow - started;
-                if (resolvedAlerts.Count > 0) ArgusAlertReview.RecordResolved(data.Dir, resolvedAlerts);
                 data.Save();
+                RecordClosedAlerts(data, previousAlerts);
                 WriteStatus(data, res);
                 Log.Info("scan: " + res.Entries + " entries, " + res.Fresh + " to review, " + res.Auto + " accepted automatically, " + res.Removed + " gone, " + (int)res.Took.TotalSeconds + " s" + (res.Problems.Count > 0 ? "; couldn't read: " + string.Join(" | ", res.Problems) : ""));
                 return res;
             }
+        }
+
+        public static void RecordClosedAlerts(ArgusData data, Dictionary<string, string> previous)
+        {
+            var remaining = new HashSet<string>(ArgusAlertReview.PendingIds(data.Pending.Values).Values, StringComparer.Ordinal);
+            ArgusAlertReview.RecordResolved(data.Dir, previous.Values.Where(id => !remaining.Contains(id)));
         }
 
         static void Raise(Finding f)

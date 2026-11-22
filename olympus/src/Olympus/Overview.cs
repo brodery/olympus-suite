@@ -74,6 +74,7 @@ namespace Olympus.Hub
             var st = new AppState { App = app };
             var s = StatusStore.Read(app.Id);
             if (app.Id == AppId.Arachne) ArachneAlertReview.ApplyStatus(s, ArachneAlertReview.Open(200));
+            if (app.Id == AppId.Argus) ArgusAlertReview.ApplyStatus(s);
             bool exe = File.Exists(Suite.ExeOf(app.Id));
             if (s == null)
             {
@@ -167,16 +168,16 @@ namespace Olympus.Hub
         // Alerts from every guardian, newest first, without the dismissed ones.
         public static List<AlertInfo> Open(int perApp)
         {
-            HashSet<string> dismissed;
-            lock (gate) dismissed = new HashSet<string>(State.Dismissed);
+            var dismissed = AlertReview.DismissedIds();
+            var resolved = ArgusAlertReview.ResolvedIds();
             var all = new List<AlertInfo>();
             foreach (var app in AppInfo.All)
             {
-                if (app.Id == AppId.Arachne) all.AddRange(ArachneAlertReview.Open(perApp));
-                else if (app.Id == AppId.Argus) all.AddRange(ArgusAlertReview.Open(perApp));
-                else all.AddRange(AlertStore.Recent(app.Id, perApp));
+                var records = AlertStore.Recent(app.Id, int.MaxValue);
+                all.AddRange(ArgusAlertReview.Remaining(records, resolved)
+                    .Where(a => !string.IsNullOrEmpty(a.Id) && !dismissed.Contains(a.Id)).Take(perApp));
             }
-            return all.Where(a => !dismissed.Contains(a.Id)).OrderByDescending(a => a.Time, StringComparer.Ordinal).ToList();
+            return all.OrderByDescending(a => a.Time, StringComparer.Ordinal).ToList();
         }
 
         // Warnings and worse from the last week that you haven't dismissed.
@@ -184,16 +185,6 @@ namespace Olympus.Hub
         {
             var since = Clock.Iso(DateTime.UtcNow.AddDays(-7));
             return Open(100).Count(a => Sev.Rank(a.Severity) >= 2 && string.CompareOrdinal(a.Time, since) > 0);
-        }
-
-        public static void Dismiss(IEnumerable<string> ids)
-        {
-            lock (gate)
-            {
-                var st = State;
-                foreach (var id in ids) if (!st.Dismissed.Contains(id)) st.Dismissed.Add(id);
-            }
-            Save();
         }
 
         public static bool Quiet

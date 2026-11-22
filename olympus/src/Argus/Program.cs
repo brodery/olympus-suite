@@ -59,12 +59,26 @@ namespace Olympus.Argus
     {
         public static int Run(string action, string alertId, string key, string undoId)
         {
-            if (key == null && alertId != null)
+            System.Threading.Mutex scan;
+            if (!Sync.Claim("argus.scan", out scan)) return 2;
+            using (scan)
+            {
+                try { return RunLocked(action, alertId, key, undoId); }
+                finally { scan.ReleaseMutex(); }
+            }
+        }
+
+        static int RunLocked(string action, string alertId, string key, string undoId)
+        {
+            var data = ArgusData.Load(Suite.MyDir);
+            var previous = ArgusAlertReview.PendingIds(data.Pending.Values);
+            if (alertId != null)
             {
                 var al = AlertStore.FindForAction(AppId.Argus, alertId, action);
-                if (al != null) key = al.Get("key");
+                key = al == null ? null : al.Get("key");
+                string currentId;
+                if (key == null || !previous.TryGetValue(key, out currentId) || currentId != alertId) return 1;
             }
-            var data = ArgusData.Load(Suite.MyDir);
             switch (action)
             {
                 case "accept":
@@ -76,6 +90,9 @@ namespace Olympus.Argus
                 }
                 case "accept-all":
                     foreach (var k in data.Pending.Keys.ToList()) Engine.Accept(data, k);
+                    break;
+                case "accept-visible":
+                    foreach (var finding in data.VisibleFindings()) Engine.Accept(data, finding.Key);
                     break;
                 case "disable":
                     if (key == null) return 1;
@@ -93,7 +110,9 @@ namespace Olympus.Argus
                     return 1;
             }
             data.Save();
+            Engine.RecordClosedAlerts(data, previous);
             Engine.RefreshStatus(data);
+            Sync.Poke(AlertReview.ChangedSignal);
             return 0;
         }
 
@@ -157,6 +176,7 @@ namespace Olympus.Argus
                 case "status":
                 {
                     var st = StatusStore.Read(AppId.Argus);
+                    ArgusAlertReview.ApplyStatus(st);
                     Cli.Out("Argus: " + (st == null ? "hasn't scanned yet" : st.State + " - " + st.Summary));
                     if (st != null) Cli.Out("       " + st.Detail);
                     var data = ArgusData.ForDisplay();
@@ -203,8 +223,9 @@ namespace Olympus.Argus
         static int Pending()
         {
             var data = ArgusData.ForDisplay();
-            if (data.Pending.Count == 0) { Cli.Out("Nothing to review."); return 0; }
-            foreach (var f in data.Pending.Values.OrderByDescending(x => Sev.Rank(x.Severity)))
+            var findings = data.VisibleFindings();
+            if (findings.Count == 0) { Cli.Out("Nothing to review."); return 0; }
+            foreach (var f in findings.OrderByDescending(x => Sev.Rank(x.Severity)))
             {
                 Cli.Out("[" + f.Severity + "] " + f.Kind + " " + Engine.Noun(f.Now.Category) + ": " + f.Now.Name);
                 if (!string.IsNullOrEmpty(f.Why)) Cli.Out("    why:  " + f.Why);

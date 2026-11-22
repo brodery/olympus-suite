@@ -19,6 +19,7 @@ namespace Olympus.Arachne
         public ArachneWindow() : base(AppInfo.Of(AppId.Arachne), 1020, 620)
         {
             AutoRefresh(15);
+            Activated += (s, e) => RefreshNow();
             dismiss = Ui.Btn("Dismiss selected alerts", (s, e) => DismissSelected());
             dismiss.Enabled = false;
             Add(Ui.Btn("Test the tripwire", (s, e) => RunTest()), dismiss);
@@ -92,7 +93,7 @@ namespace Olympus.Arachne
         {
             var ids = alerts.SelectedItems.Cast<ListViewItem>().Select(row => row.Tag as string).ToArray();
             if (ids.Length == 0) return;
-            try { ArachneAlertReview.Dismiss(ids); }
+            try { AlertReview.Dismiss(ids); }
             catch (Exception e)
             {
                 Log.Error("dismissing Arachne alerts", e);

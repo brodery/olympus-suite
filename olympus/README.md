@@ -78,6 +78,7 @@ building their own copy can use their own signing identity.
   commented-out sets for source folders that are missing during setup.
 - Atlas: cleanup list `atlas.ini` next to the exes; settings (warning level, drives to ignore) in
   `%LOCALAPPDATA%\Olympus\atlas\settings.ini`; saved maps in its `maps` folder.
+- Dismiss an alert in the hub, Argus, or Arachne to clear it from both review lists. Dismissal acknowledges that occurrence. Use **It's fine, keep it** in Argus to accept the change into its baseline, or **It's fine, allow it** in Arachne to change its allow list. Select an alert in the hub for the actions the app offers and a shortcut to its details.
 - Every app has a command line too: `Argus.exe help`, `Ark.exe status`, `Olympus.exe status`...
   (from PowerShell add `| Out-String`).
 

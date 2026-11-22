@@ -19,17 +19,19 @@ namespace Olympus.Argus
         readonly TextBox filter = new TextBox();
         readonly ComboBox kind = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         readonly TextBox detail = new TextBox();
-        readonly Button keep, turnOff, undo;
+        readonly Button keep, turnOff, undo, dismiss;
         ArgusData data;
         bool scanning;
 
         public ArgusWindow() : base(AppInfo.Of(AppId.Argus), 1080, 720)
         {
             AutoRefresh(30);
+            Activated += (s, e) => RefreshNow();
             keep = Ui.Btn("It's fine, keep it", (s, e) => Act("accept"));
+            dismiss = Ui.Btn("Dismiss alert", (s, e) => DismissSelected());
             turnOff = Ui.Btn("Turn it off", (s, e) => Act("disable"));
             undo = Ui.Btn("Undo (put it back)", (s, e) => UndoSelected());
-            Add(Ui.Btn("Scan now", (s, e) => ScanNow()), keep, turnOff, undo,
+            Add(Ui.Btn("Scan now", (s, e) => ScanNow()), dismiss, keep, turnOff, undo,
                 Ui.Btn("Show where it lives", (s, e) => ShowLocation()),
                 Ui.Btn("Keep everything listed", (s, e) => KeepAll()));
 
@@ -70,6 +72,7 @@ namespace Olympus.Argus
             foreach (var lv in new[] { review, all, off, history }) lv.SelectedIndexChanged += (s, e) => { ShowDetail(); UpdateButtons(); };
             tabs.SelectedIndexChanged += (s, e) => { ShowDetail(); UpdateButtons(); };
             review.DoubleClick += (s, e) => ShowLocation();
+            review.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) DismissSelected(); };
             all.DoubleClick += (s, e) => ShowLocation();
         }
 
@@ -77,19 +80,20 @@ namespace Olympus.Argus
         {
             data = ArgusData.ForDisplay();
             var st = StatusStore.Read(AppId.Argus);
+            ArgusAlertReview.ApplyStatus(st);
             if (st == null) SetState(States.Off, "No scan yet — click Scan now");
             else SetState(st.State, st.Summary);
             StatusBar.Text = (st != null ? st.Detail + " · " : "") + "data: " + data.Dir;
 
             var rows = new List<ListViewItem>();
-            foreach (var f in data.Pending.Values.OrderByDescending(x => Sev.Rank(x.Severity)).ThenByDescending(x => x.Seen, StringComparer.Ordinal))
+            foreach (var f in data.VisibleFindings().OrderByDescending(x => Sev.Rank(x.Severity)).ThenByDescending(x => x.Seen, StringComparer.Ordinal))
             {
                 var it = Ui.Row(f.Key, Ui.SevWord(f.Severity), f.Kind, Engine.Noun(f.Now.Category), f.Now.Name, f.Now.SignedBy, f.Why ?? "");
                 it.ForeColor = Ui.SevColor(f.Severity);
                 rows.Add(it);
             }
             Ui.Fill(review, rows);
-            tabs.TabPages[0].Text = "To review (" + data.Pending.Count + ")";
+            tabs.TabPages[0].Text = "To review (" + rows.Count + ")";
 
             var kinds = new List<string> { "All kinds" };
             kinds.AddRange(data.Current.Select(i => i.Category).Distinct().OrderBy(c => c).Select(Engine.Plural));
@@ -138,6 +142,7 @@ namespace Olympus.Argus
             int t = tabs.SelectedIndex;
             bool picked = SelectedTag != null;
             keep.Enabled = t == 0 && picked;
+            dismiss.Enabled = keep.Enabled;
             turnOff.Enabled = (t == 0 || t == 1) && picked;
             undo.Enabled = t == 2 && picked;
         }
@@ -194,9 +199,21 @@ namespace Olympus.Argus
 
         void KeepAll()
         {
-            if (data == null || data.Pending.Count == 0) return;
-            if (!Ui.Confirm(this, "Keep all " + data.Pending.Count + " changes as they are? Only do this if you recognise them.")) return;
-            Run("accept-all", null, null);
+            if (review.Items.Count == 0) return;
+            if (!Ui.Confirm(this, "Keep all " + review.Items.Count + " listed changes as they are? Only do this if you recognise them.")) return;
+            Run("accept-visible", null, null);
+        }
+
+        void DismissSelected()
+        {
+            if (data == null || tabs.SelectedIndex != 0) return;
+            var ids = ArgusAlertReview.PendingIds(data.Pending.Values);
+            var selected = review.SelectedItems.Cast<ListViewItem>()
+                .Select(row => ids[(string)row.Tag]).Where(id => !string.IsNullOrEmpty(id)).ToList();
+            if (selected.Count == 0) return;
+            try { AlertReview.Dismiss(selected); }
+            catch (Exception e) { Ui.Warn(this, "Couldn't save the dismissal. " + e.Message); return; }
+            RefreshNow();
         }
 
         void Run(string action, string key, string undoId)
@@ -249,6 +266,10 @@ namespace Olympus.Argus
             var a = AlertStore.Find(AppId.Argus, request.Substring(6));
             if (a == null) return;
             string key = a.Get("key");
+            RefreshNow();
+            Finding finding;
+            if (key == null || !data.Pending.TryGetValue(key, out finding) ||
+                ArgusAlertReview.PendingIds(new[] { finding })[key] != a.Id) return;
             tabs.SelectedIndex = 0;
             foreach (ListViewItem row in review.Items)
                 if ((row.Tag as string) == key) { row.Selected = true; row.EnsureVisible(); review.Focus(); return; }
