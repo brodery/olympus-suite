@@ -206,7 +206,7 @@ general app hub: it also watches and switches the other programs built for this 
   each given an `AppKind` by `AppEntry.KindOf`) + registered programs: `AppRegistry.BuiltInList` (compiled
   in; entries whose program is missing are dropped) overlaid by the user's `%LOCALAPPDATA%\Olympus\olympus\apps.ini`
   (same name replaces, `remove = true` hides; suite names can't be taken). Adding a program is one INI
-  section: `exe`/`stop`/`log`/`status`/`icon`/`color`, or `type = launcher` + `command`. Registered
+  section: `exe`/`stop`/`log`/`status`/`service`/`icon`/`color`, or `type = launcher` + `command`. Registered
   programs never run elevated and the elevated helper never reads apps.ini.
   - On/off per kind (`AppControl.Switch`): Watcher/OnDemand = `off_apps` in olympus.ini (Supervise skips
     them; Sibyl's hotkey is released); Periodic/Engine = the `\Olympus\<App>` task via the elevated helper

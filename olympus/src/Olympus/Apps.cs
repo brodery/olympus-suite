@@ -35,6 +35,7 @@ namespace Olympus.Hub
         public AppInfo Info;          // the suite's own apps; null for registered ones
         public string Exe;            // the program (Startup), or what Command runs (Launcher)
         public string StartArgs = "", StopArgs, RunName, RunCommand, LogPath, StatusPath, IconPath, Command, Folder, Confirm;
+        public string Service;        // a Windows service it needs (a driver, say): not running = a warning while the app runs
         public bool BuiltIn;          // from the hub's own list rather than your apps.ini
         public Color Top = Color.FromArgb(0x78, 0x90, 0x9C), Bottom = Color.FromArgb(0x45, 0x5A, 0x64);
 
@@ -122,6 +123,7 @@ namespace Olympus.Hub
             "icon = C:\\Claude\\proteus\\proteus.ico\r\n" +
             "stop = --exit\r\n" +
             "log = C:\\Claude\\proteus\\proteus.log\r\n" +
+            "service = ViGEmBus\r\n" +
             "color = 26A69A, 00695C\r\n" +
             "\r\n" +
             "[iFunny download]\r\n" +
@@ -173,6 +175,7 @@ namespace Olympus.Hub
             ";   run_command = \"C:\\path\\to\\App.exe\"  what Enable writes there (default: the exe and args)\r\n" +
             ";   log = C:\\path\\to\\app.log            its last line shows as the app's details (optional)\r\n" +
             ";   status = C:\\path\\to\\status.json     an Olympus-style status file it writes (optional)\r\n" +
+            ";   service = Name                       a Windows service it needs; flagged while it isn't running (optional)\r\n" +
             ";   icon = C:\\path\\to\\app.ico           (optional; default: the exe's icon)\r\n" +
             ";   color = RRGGBB, RRGGBB               tile colours (optional)\r\n" +
             ";\r\n" +
@@ -248,6 +251,7 @@ namespace Olympus.Hub
                 IconPath = PathOrNull(ini.Get(sec, "icon", null)),
                 LogPath = PathOrNull(ini.Get(sec, "log", null)),
                 StatusPath = PathOrNull(ini.Get(sec, "status", null)),
+                Service = NullIfEmpty(ini.Get(sec, "service", null)),
                 Confirm = NullIfEmpty(ini.Get(sec, "confirm", null))
             };
             Color top, bottom;

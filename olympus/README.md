@@ -33,7 +33,7 @@ is left out.
 
 Add your own in `%LOCALAPPDATA%\Olympus\olympus\apps.ini` (**Edit my apps list** on the Apps tab):
 one `[Name]` section with `exe =` (plus optional `role`, `about`, `args`, `stop`, `log`, `status`,
-`icon`, `color`), or `type = launcher` with `command =`. The file explains every key. A section with
+`icon`, `color`, `service`), or `type = launcher` with `command =`. The file explains every key. A section with
 the name of a built-in entry replaces it; `remove = true` hides one. Olympus re-reads it every 15
 seconds. An app that writes an Olympus-style `status.json` (`state`, `summary`, `detail`,
 `updated`) can point `status =` at it to show its own health.

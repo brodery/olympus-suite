@@ -104,6 +104,22 @@ namespace Olympus.Hub
             }
         }
 
+        // What's wrong with a service an app needs, or null when it's running (or none is named).
+        public static string ServiceProblem(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            try
+            {
+                using (var sc = new System.ServiceProcess.ServiceController(name))
+                {
+                    var s = sc.Status;   // throws when there's no such service
+                    return s == System.ServiceProcess.ServiceControllerStatus.Running ? null : "Running, but the " + name + " service is " + s.ToString().ToLowerInvariant();
+                }
+            }
+            catch (InvalidOperationException) { return "Running, but the " + name + " service isn't installed"; }
+            catch (Exception) { return null; }
+        }
+
         // A registered program: open or not, switched on at sign-in or not, plus what it says itself.
         static AppState Registered(AppEntry e)
         {
@@ -135,6 +151,12 @@ namespace Olympus.Hub
                 st.Summary = own != null && !string.IsNullOrEmpty(own.Summary) ? own.Summary : "Running";
                 if (st.Enabled == false) st.Summary += " · doesn't start at sign-in";
                 st.Detail = own != null && !string.IsNullOrEmpty(own.Detail) ? own.Detail : (LogTail.Last(e.LogPath) ?? e.Blurb);
+                string svc = ServiceProblem(e.Service);
+                if (svc != null && States.Rank(st.State) < 2)
+                {
+                    st.State = States.Warn;
+                    st.Summary = svc;
+                }
             }
             else if (st.Enabled == true)
             {

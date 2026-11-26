@@ -75,7 +75,9 @@ namespace Olympus.Tests
                 var own = AppRegistry.Registered(Ini.Parse(AppRegistry.BuiltInList), none, false);
                 T.True(own.Any(e => e.Name == "Orpheus" && e.Kind == AppKind.Startup && e.StopArgs == "--exit"), "apps: built-in Orpheus entry");
                 T.True(own.Any(e => e.Name == "Iris" && e.RunCommand == "\"C:\\Claude\\iris\\Iris.exe\""), "apps: built-in Iris entry");
-                T.True(own.Any(e => e.Name == "Proteus" && e.StopArgs == "--exit" && e.LogPath == "C:\\Claude\\proteus\\proteus.log"), "apps: built-in Proteus entry");
+                T.True(own.Any(e => e.Name == "Proteus" && e.StopArgs == "--exit" && e.LogPath == "C:\\Claude\\proteus\\proteus.log" && e.Service == "ViGEmBus"), "apps: built-in Proteus entry, with its driver service");
+                T.True(Overview.ServiceProblem(null) == null && Overview.ServiceProblem("EventLog") == null, "apps: a running service is fine");
+                T.Eq("Running, but the OlympusNoSuchService service isn't installed", Overview.ServiceProblem("OlympusNoSuchService"), "apps: a missing service is flagged");
                 T.Eq(5, own.Count(e => e.Kind == AppKind.Launcher), "apps: built-in launchers");
                 T.True(own.All(e => AppInfo.Find(e.Name) == null), "apps: built-in names don't clash with the suite");
                 T.True(Ini.Parse(AppRegistry.UserTemplate).Sections.All(s => s.Length == 0), "apps: the template is all comments");
