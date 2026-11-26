@@ -42,7 +42,7 @@ namespace Olympus
         // Order must match the AppId enum.
         static readonly AppInfo[] all =
         {
-            A(AppId.Olympus,  "Olympus",  "security hub",          "Ties every guardian together.",                   0x5C6BC0, 0x283593, false, false),
+            A(AppId.Olympus,  "Olympus",  "app hub",               "Runs and watches over all your apps.",            0x5C6BC0, 0x283593, false, false),
             A(AppId.Aegis,    "Aegis",    "DNS filter",            "Blocks ad, tracker and malware sites.",           0x34C76F, 0x0E8643, false, false),
             A(AppId.Argus,    "Argus",    "hijack watcher",        "Watches every spot adware uses to dig in.",       0x26C6DA, 0x00838F, true,  false),
             A(AppId.Sibyl,    "Sibyl",    "link and scam checker", "Checks links and messages for scams.",            0xAB47BC, 0x6A1B9A, false, false),
@@ -61,7 +61,8 @@ namespace Olympus
         {
             return all.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         }
-        // Aegis and the nine Olympus guardians, in dashboard order.
+        // Aegis and the nine Olympus apps (the "guardians"), in dashboard order. The hub adds the
+        // programs registered in apps.ini (src/Olympus/Apps.cs).
         public static IEnumerable<AppInfo> Guardians { get { return all.Where(a => a.Id != AppId.Olympus); } }
     }
 

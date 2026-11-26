@@ -7,7 +7,7 @@ $Dest = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Olympus'
 $Data = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Olympus'
 $TaskPath = '\Olympus\'
 $Apps = @('Olympus', 'Argus', 'Sibyl', 'Janus', 'Arachne', 'Athena', 'Cerberus', 'Ark', 'Ares', 'Atlas')
-$Roles = @{ Olympus = 'security hub'; Argus = 'hijack watcher'; Sibyl = 'link and scam checker'; Janus = 'download inspector'; Arachne = 'infostealer tripwire'
+$Roles = @{ Olympus = 'app hub'; Argus = 'hijack watcher'; Sibyl = 'link and scam checker'; Janus = 'download inspector'; Arachne = 'infostealer tripwire'
             Athena = 'security report card'; Cerberus = 'outbound firewall'; Ark = 'versioned backups'; Ares = 'game-mode autopilot'; Atlas = 'disk space map' }
 # Programs your session runs in the background (the hub keeps them going), and the signal that stops each.
 $Watchers = @{ Janus = 'janus.stop'; Ares = 'ares.stop'; Atlas = 'atlas.stop' }

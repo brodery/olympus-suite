@@ -1173,6 +1173,21 @@ namespace Aegis
             File.WriteAllText(App.PausePath, App.Unix(DateTime.UtcNow + d).ToString(CultureInfo.InvariantCulture));
         }
 
+        // "Until you turn it back on": the latest time a DateTime holds (9999-12-31), so every reader
+        // (engine, tray, the Olympus hub) treats it as an ordinary pause that never runs out.
+        public const long ForeverUnix = 253402300799;
+        public static void SetForever()
+        {
+            App.EnsureDirs();
+            File.WriteAllText(App.PausePath, ForeverUnix.ToString(CultureInfo.InvariantCulture));
+        }
+        public static bool IsForever(DateTime untilUtc) { return untilUtc > DateTime.UtcNow.AddYears(1); }
+        // "until 9:41 PM", or "until you turn it back on"
+        public static string Until(DateTime untilUtc)
+        {
+            return IsForever(untilUtc) ? "until you turn it back on" : "until " + untilUtc.ToLocalTime().ToString("t", CultureInfo.CurrentCulture);
+        }
+
         public static void Clear()
         {
             try { File.Delete(App.PausePath); } catch { }
@@ -1608,6 +1623,12 @@ namespace Aegis
         {
             Pause.Set(d);
             return "Filtering paused until " + DateTime.Now.Add(d).ToString("t") + "." + Applied();
+        }
+
+        public static string PauseForever()
+        {
+            Pause.SetForever();
+            return "Filtering paused until you turn it back on. Windows still sends its lookups to Aegis, so DNS keeps working." + Applied();
         }
 
         public static string Resume()

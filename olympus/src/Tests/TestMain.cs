@@ -73,6 +73,7 @@ namespace Olympus.Tests
                 new KeyValuePair<string, Action>("sibyl", SibylTests.Run),
                 new KeyValuePair<string, Action>("later", LaterTests.Run),
                 new KeyValuePair<string, Action>("atlas", AtlasTests.Run),
+                new KeyValuePair<string, Action>("hub-apps", HubAppsTests.Run),
             };
             foreach (var s in suites)
             {

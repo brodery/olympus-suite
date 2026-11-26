@@ -79,7 +79,13 @@ try {
     }
 
     # start them again
-    foreach ($e in 'Cerberus', 'Arachne') { if ($names -contains $e) { Start-ScheduledTask -TaskPath $TaskPath -TaskName $e } }
+    # (an engine you switched off in Olympus stays off)
+    foreach ($e in 'Cerberus', 'Arachne') {
+        if ($names -notcontains $e) { continue }
+        $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $e -ErrorAction SilentlyContinue
+        if ($task -and $task.State -ne 'Disabled') { Start-ScheduledTask -TaskPath $TaskPath -TaskName $e }
+        else { Write-Host "  ($e is switched off in Olympus; left off)" }
+    }
     if ($restartHub) { Start-Process explorer.exe -ArgumentList ('"' + (Join-Path $Dest 'Olympus.exe') + '"') }   # as you, not as admin; it restarts the watchers
     Write-Host 'Olympus is up to date.' -ForegroundColor Green
 }

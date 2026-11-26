@@ -591,6 +591,12 @@ namespace Aegis
             Eq("93.184.216.34", FirstAddress(r), "engine: paused -> not blocked");
             engine.PauseUntil(DateTime.MinValue);
             Eq("0.0.0.0", FirstAddress(engine.Answer(MakeQuery("ads.doubleclick.net", Dns.A), false, true)), "engine: resumed -> blocked again");
+            engine.PauseUntil(App.FromUnix(Pause.ForeverUnix));
+            Eq("93.184.216.34", FirstAddress(engine.Answer(MakeQuery("ads.doubleclick.net", Dns.A), false, true)), "engine: paused until turned back on -> not blocked");
+            Check(Encoding.UTF8.GetString(engine.Answer(MakeQuery("status.aegis.invalid", Dns.TXT), false, true)).Contains("until=253402300799"), "engine: status reports the never-ending pause");
+            Check(Pause.IsForever(App.FromUnix(Pause.ForeverUnix)) && !Pause.IsForever(DateTime.UtcNow.AddHours(24)), "pause: forever vs a day");
+            Eq("until you turn it back on", Pause.Until(App.FromUnix(Pause.ForeverUnix)), "pause: wording");
+            engine.PauseUntil(DateTime.MinValue);
 
             int chBefore = up.Calls;
             engine.Answer(MakeQuery("doubleclick.net", Dns.TXT, qclass: 3), false, true);

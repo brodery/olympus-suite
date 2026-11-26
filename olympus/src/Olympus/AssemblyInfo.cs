@@ -2,8 +2,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
-[assembly: AssemblyTitle("Olympus security hub")]
-[assembly: AssemblyDescription("Ties Aegis and the Olympus guardians together: one tray icon, dashboard and alert inbox")]
+[assembly: AssemblyTitle("Olympus app hub")]
+[assembly: AssemblyDescription("One hub for every app on this PC: status, on/off, start/stop, one tray icon, dashboard and alert inbox")]
 [assembly: AssemblyProduct("Olympus")]
 [assembly: AssemblyCompany("Olympus")]
 [assembly: AssemblyCopyright("Built on this PC")]

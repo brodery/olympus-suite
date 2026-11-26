@@ -1,5 +1,5 @@
-// What the hub knows: how each guardian is doing, the alert inbox (what's been dismissed,
-// what's been toasted), hub settings, and running a guardian or one of its alert actions.
+// What the hub knows: how each app is doing, the alert inbox (what's been dismissed, what's
+// been toasted), hub settings, and opening an app or running one of its alert actions.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -11,20 +11,144 @@ namespace Olympus.Hub
 {
     sealed class AppState
     {
-        public AppInfo App;
+        public AppEntry Entry;
+        public AppInfo App;      // the suite's own apps; null for registered ones
         public string State = States.Off, Summary = "", Detail = "";
         public DateTime Updated = DateTime.MinValue;
         public bool Present;
-        public bool Running;   // on duty right now (reporting on time); Sibyl: ready through the hotkey
+        public bool Running;     // on duty right now (reporting on time, or its program is open); Sibyl: ready through the hotkey
+        public bool? Enabled;    // switched on (stays on after a restart); null when it can't be told
+        public bool Held;        // a watcher you stopped by hand, left stopped until you start it or sign in again
+        public bool Tray;        // Aegis: its tray icon is open
+
+        public string Name { get { return Entry.Name; } }
+        public bool Off { get { return Enabled == false; } }
+        // drawn greyed: switched off and not running, or stopped by hand
+        public bool Faded { get { return Held || (Off && !Running); } }
+        public string RunWord
+        {
+            get
+            {
+                if (Entry.Kind == AppKind.Launcher) return "-";
+                if (Entry.Kind == AppKind.OnDemand) return Off ? "no" : "ready";
+                return Running ? "yes" : "no";
+            }
+        }
+        public string OnWord
+        {
+            get
+            {
+                if (Entry.Kind == AppKind.Launcher) return "—";
+                return Enabled == true ? "On" : Enabled == false ? "Off" : "?";
+            }
+        }
     }
 
     static class Overview
     {
         public static List<AppState> Collect()
         {
+            var settings = HubSettings.Load();
+            var held = Held.Read();
             var list = new List<AppState>();
-            foreach (var app in AppInfo.Guardians) list.Add(app.Id == AppId.Aegis ? Aegis() : FromStatus(app));
+            foreach (var e in AppRegistry.All())
+            {
+                AppState st;
+                try
+                {
+                    if (e.Kind == AppKind.Aegis) st = Aegis();
+                    else if (e.IsSuite) st = FromStatus(e.Info);
+                    else st = Registered(e);
+                    st.Entry = e;
+                    if (e.IsSuite) Switched(st, settings, held);
+                }
+                catch (Exception x)
+                {
+                    st = new AppState { Entry = e, App = e.Info, State = States.Error, Summary = "Couldn't check: " + x.Message };
+                }
+                list.Add(st);
+            }
             return list;
+        }
+
+        // Whether one of the suite's apps is switched on, and what that changes in its state line.
+        static void Switched(AppState st, HubSettings settings, HashSet<string> held)
+        {
+            var e = st.Entry;
+            switch (e.Kind)
+            {
+                case AppKind.Watcher:
+                case AppKind.OnDemand:
+                    st.Enabled = !settings.IsOff(e.Name);
+                    st.Held = e.Kind == AppKind.Watcher && held.Contains(e.Name);
+                    break;
+                case AppKind.Periodic:
+                case AppKind.Engine:
+                    st.Enabled = Suite.Installed ? TaskControl.Enabled(e.Name) : null;
+                    // a fresh report means its task is evidently running
+                    if (st.Enabled == null && st.Running) st.Enabled = true;
+                    break;
+            }
+            if (!st.Present) return;
+            if (e.Kind == AppKind.OnDemand && st.Off) { st.State = States.Off; st.Summary = "Off: its hotkey is free"; st.Running = false; }
+            else if (st.Off && !st.Running)
+            {
+                st.State = States.Off;
+                if (st.Updated != DateTime.MinValue) st.Detail = "Last report " + Fmt.Ago(st.Updated) + ": " + st.Summary;
+                st.Summary = "Off (switched off in Olympus)";
+            }
+            else if (st.Held && !st.Running)
+            {
+                st.State = States.Off;
+                st.Summary = "Stopped until you start it again (or Olympus restarts)";
+            }
+        }
+
+        // A registered program: open or not, switched on at sign-in or not, plus what it says itself.
+        static AppState Registered(AppEntry e)
+        {
+            var st = new AppState { Entry = e };
+            if (e.Kind == AppKind.Launcher)
+            {
+                st.Present = AppRegistry.Present(e);
+                st.State = st.Present ? States.Ok : States.Error;
+                st.Summary = st.Present ? "Ready: runs when you click Run" : "Not found";
+                st.Detail = st.Present ? e.Blurb : "Couldn't find what it runs: " + e.Command;
+                return st;
+            }
+            st.Present = File.Exists(e.Exe);
+            if (!st.Present)
+            {
+                st.State = States.Error;
+                st.Summary = "Not found";
+                st.Detail = "Couldn't find " + e.Exe;
+                return st;
+            }
+            try { st.Enabled = StartupEntry.State(e.RunName) == true; } catch (Exception) { st.Enabled = null; }
+            st.Running = Proc.Running(e.Exe);
+            st.Updated = DateTime.UtcNow;
+            StatusInfo own = e.StatusPath == null ? null : J.Load<StatusInfo>(e.StatusPath);
+            if (own != null && (DateTime.UtcNow - own.UpdatedUtc) > TimeSpan.FromMinutes(30)) own = null;
+            if (st.Running)
+            {
+                st.State = own != null && !string.IsNullOrEmpty(own.State) ? own.State : States.Ok;
+                st.Summary = own != null && !string.IsNullOrEmpty(own.Summary) ? own.Summary : "Running";
+                if (st.Enabled == false) st.Summary += " · doesn't start at sign-in";
+                st.Detail = own != null && !string.IsNullOrEmpty(own.Detail) ? own.Detail : (LogTail.Last(e.LogPath) ?? e.Blurb);
+            }
+            else if (st.Enabled == true)
+            {
+                st.State = States.Warn;
+                st.Summary = "Not running (it's set to start at sign-in)";
+                st.Detail = LogTail.Last(e.LogPath) ?? e.Blurb;
+            }
+            else
+            {
+                st.State = States.Off;
+                st.Summary = "Off";
+                st.Detail = e.Blurb;
+            }
+            return st;
         }
 
         static long Num(Dictionary<string, string> f, string k)
@@ -34,25 +158,41 @@ namespace Olympus.Hub
             return f.TryGetValue(k, out v) && long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out n) ? n : 0;
         }
 
+        // Aegis is paused "until you turn it back on" when its pause runs out more than a year away.
+        public static bool PausedForGood(Dictionary<string, string> f)
+        {
+            string state;
+            if (!f.TryGetValue("state", out state) || state != "paused") return false;
+            long until = Num(f, "until");
+            return until > 0 && Clock.FromUnix(Math.Min(until, 253402300799L)) > DateTime.UtcNow.AddDays(365);
+        }
+
         static AppState Aegis()
         {
             var st = new AppState { App = AppInfo.Of(AppId.Aegis), Updated = DateTime.UtcNow };
+            string exe = AegisClient.Exe;
+            st.Tray = exe != null && Proc.Running(exe);
             var f = AegisClient.Status();
             if (f.Count == 0)
             {
-                st.Present = AegisClient.Exe != null;
+                st.Present = exe != null;
                 st.State = st.Present ? States.Alert : States.Off;
                 st.Summary = st.Present ? "Its engine isn't answering" : "Not installed";
                 return st;
             }
             st.Present = true;
+            st.Running = true;
             string state;
             f.TryGetValue("state", out state);
             long blocked = Num(f, "b"), lookups = Num(f, "q"), domains = Num(f, "domains");
-            if (state == "paused") { st.State = States.Warn; st.Summary = "Paused"; }
+            st.Enabled = !PausedForGood(f);
+            if (st.Off) { st.State = States.Off; st.Summary = "Off: filtering paused until you enable it"; }
+            else if (state == "paused") { st.State = States.Warn; st.Summary = "Paused"; }
             else if (!AegisClient.WindowsUsesAegis()) { st.State = States.Warn; st.Summary = "Windows isn't using it"; }
             else { st.State = States.Ok; st.Summary = "Filtering · " + blocked.ToString("N0") + " blocked today"; }
-            st.Detail = lookups.ToString("N0") + " lookups today · " + domains.ToString("N0") + " domains listed";
+            st.Detail = st.Off ? "Windows still sends its lookups to Aegis, so DNS keeps working; nothing is blocked."
+                : lookups.ToString("N0") + " lookups today · " + domains.ToString("N0") + " domains listed";
+            if (!st.Tray) st.Detail += " · tray icon closed";
             return st;
         }
 
@@ -103,26 +243,33 @@ namespace Olympus.Hub
             return st;
         }
 
+        // The hub's one-line verdict. Apps you switched off or stopped by hand, and launchers, don't count.
         public static string Overall(List<AppState> states, int openAlerts, out string text)
         {
-            var present = states.Where(s => s.Present).ToList();
+            var present = states.Where(s => s.Present && s.Entry.Kind != AppKind.Launcher && !s.Off && !s.Held).ToList();
             var bad = present.Where(s => States.Rank(s.State) == 3).ToList();
-            var warnings = present.Where(s => s.State == States.Warn || (s.State == States.Off && s.App.Id != AppId.Sibyl)).ToList();
+            var warnings = present.Where(s => s.State == States.Warn || (s.State == States.Off && s.Entry.Kind != AppKind.OnDemand)).ToList();
+            if (present.Count == 0 && states.Any(s => s.Present && s.Entry.Kind != AppKind.Launcher))
+            {
+                text = "Every app is switched off";
+                return openAlerts > 0 ? States.Warn : States.Off;
+            }
             if (present.Count == 0) { text = "Nothing installed yet"; return States.Off; }
             if (bad.Count > 0)
             {
-                text = bad.Count == 1 ? bad[0].App.Name + " needs attention" : bad.Count + " guardians need attention";
+                text = bad.Count == 1 ? bad[0].Name + " needs attention" : bad.Count + " apps need attention";
                 return States.Alert;
             }
             if (warnings.Count + openAlerts > 0)
             {
                 var parts = new List<string>();
                 if (openAlerts > 0) parts.Add(Fmt.Plural(openAlerts, "alert") + " to review");
-                if (warnings.Count > 0) parts.Add(warnings.Count == 1 ? warnings[0].App.Name + " needs a look" : warnings.Count + " guardians need a look");
+                if (warnings.Count > 0) parts.Add(warnings.Count == 1 ? warnings[0].Name + " needs a look" : warnings.Count + " apps need a look");
                 text = string.Join(" · ", parts);
                 return States.Warn;
             }
-            text = "All quiet · " + Fmt.Plural(present.Count, "guardian") + " on watch";
+            int off = states.Count(s => s.Present && s.Entry.Kind != AppKind.Launcher && (s.Off || s.Held));
+            text = "All quiet · " + Fmt.Plural(present.Count, "app") + " on" + (off > 0 ? " · " + off + " off" : "");
             return States.Ok;
         }
     }
@@ -210,23 +357,28 @@ namespace Olympus.Hub
         public bool RunWatchers = true, Toasts = true, HoldWhileGaming = true, GuardianIcons = true, PinIcons = true;
         public int AthenaHours = 24;
         public List<string> Hidden = new List<string>();
+        public List<string> Off = new List<string>();
+
+        public bool IsOff(string name) { return Off.Contains(name, StringComparer.OrdinalIgnoreCase); }
 
         public const string Defaults =
-            "; Olympus hub settings. Changes apply the next time Olympus starts.\r\n\r\n" +
+            "; Olympus hub settings. Changes apply the next time Olympus starts (off_apps applies at once).\r\n\r\n" +
             "[hub]\r\n" +
             "; Check the link or message on the clipboard with Sibyl.\r\n" +
             "hotkey = Ctrl+Alt+L\r\n" +
             "; Keep Janus (downloads), Ares (game mode) and Atlas (drive space) running in the background.\r\n" +
             "run_watchers = true\r\n" +
+            "; Apps you switched off on the dashboard's Apps tab (Janus, Ares, Atlas: the hub leaves them off; Sibyl: no hotkey).\r\n" +
+            "off_apps =\r\n" +
             "; Pop-up notifications for new alerts (warnings and worse).\r\n" +
             "toasts = true\r\n" +
             "; Hold non-urgent pop-ups while a game is running; show a summary afterwards.\r\n" +
             "hold_while_gaming = true\r\n" +
             "; How often Athena re-grades your PC (hours).\r\n" +
             "athena_report_hours = 24\r\n" +
-            "; A tray icon for each guardian while it's running, next to Olympus's own.\r\n" +
+            "; A tray icon for each Olympus app while it's running, next to Olympus's own.\r\n" +
             "guardian_icons = true\r\n" +
-            "; Guardians whose tray icon you hid (right-click an icon > Hide this icon). Delete a name to bring it back.\r\n" +
+            "; Apps whose tray icon you hid (right-click an icon > Hide this icon). Delete a name to bring it back.\r\n" +
             "hidden_icons =\r\n" +
             "; Ask Windows to show Olympus's icons on the taskbar instead of in the ^ overflow (once per icon; your later choice in Settings wins).\r\n" +
             "pin_icons = true\r\n";
@@ -245,25 +397,44 @@ namespace Olympus.Hub
                 AthenaHours = Math.Max(1, ini.Int("hub", "athena_report_hours", 24)),
                 GuardianIcons = ini.Bool("hub", "guardian_icons", true),
                 PinIcons = ini.Bool("hub", "pin_icons", true),
-                Hidden = ini.List("hub", "hidden_icons")
+                Hidden = ini.List("hub", "hidden_icons"),
+                Off = ini.List("hub", "off_apps")
             };
         }
 
         // The settings text with hidden_icons set to the list (other lines and comments untouched).
-        public static string WithHidden(string text, IEnumerable<string> hidden)
+        public static string WithHidden(string text, IEnumerable<string> hidden) { return WithList(text, "hidden_icons", hidden); }
+
+        // The settings text with one [hub] list setting replaced (or added under [hub]).
+        public static string WithList(string text, string key, IEnumerable<string> values)
         {
-            string line = "hidden_icons = " + string.Join(", ", hidden);
-            var existing = new System.Text.RegularExpressions.Regex(@"(?m)^[ \t]*hidden_icons[ \t]*=.*$");
+            string line = key + " = " + string.Join(", ", values);
+            var existing = new System.Text.RegularExpressions.Regex(@"(?m)^[ \t]*" + System.Text.RegularExpressions.Regex.Escape(key) + @"[ \t]*=[^\r\n]*");
             if (existing.IsMatch(text)) return existing.Replace(text, line, 1);
             var hub = new System.Text.RegularExpressions.Regex(@"(?m)^\[hub\][ \t]*\r?$");
             if (hub.IsMatch(text)) return hub.Replace(text, "[hub]\r\n" + line, 1);
             return text.TrimEnd() + "\r\n\r\n[hub]\r\n" + line + "\r\n";
         }
 
-        public static void SaveHidden(IEnumerable<string> hidden)
+        public static void SaveHidden(IEnumerable<string> hidden) { SaveList("hidden_icons", hidden); }
+
+        // Adds or removes an app in off_apps.
+        public static void SetOff(string name, bool off)
         {
-            string text = File.Exists(FilePath) ? File.ReadAllText(FilePath) : Defaults;
-            FileUtil.WriteAtomic(FilePath, WithHidden(text, hidden));
+            var now = Load().Off;
+            now.RemoveAll(n => n.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (off) now.Add(name);
+            SaveList("off_apps", now);
+        }
+
+        static readonly object saveGate = new object();
+        static void SaveList(string key, IEnumerable<string> values)
+        {
+            lock (saveGate)
+            {
+                string text = File.Exists(FilePath) ? File.ReadAllText(FilePath) : Defaults;
+                FileUtil.WriteAtomic(FilePath, WithList(text, key, values));
+            }
         }
     }
 

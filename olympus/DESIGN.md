@@ -1,11 +1,12 @@
 # Olympus — design notes (for whoever works on this next)
 
 Olympus is a suite of ten small Windows apps built with the C# 5 compiler that ships with
-Windows (.NET Framework 4.8, `csc.exe`), like Aegis. `build.ps1` compiles everything.
+Windows (.NET Framework 4.8, `csc.exe`), like Aegis. `build.ps1` compiles everything. The hub is a
+general app hub: it also watches and switches the other programs built for this PC (apps.ini).
 
 | App | Role | Runs as | Data |
 |---|---|---|---|
-| Olympus | hub: the one tray icon, dashboard, alert inbox, hotkey, runs the watchers | you (Run key) | %LOCALAPPDATA%\Olympus\olympus |
+| Olympus | app hub: the one tray icon, dashboard, alert inbox, hotkey, runs the watchers, switches every app (its own and the ones in apps.ini) on/off and starts/stops it | you (Run key) | %LOCALAPPDATA%\Olympus\olympus |
 | Aegis | DNS filter from the [Aegis project](../aegis) | background engine and tray icon | queried over DNS: `status.aegis.invalid`, `NAME.check.aegis.invalid` |
 | Argus | hijack/persistence watcher: snapshot + diff of startup spots | SYSTEM task every 5 min (`--scan`) | ProgramData\Olympus\argus |
 | Sibyl | link and scam checker (Ctrl+Alt+L via the hub) | you, on demand | LocalAppData |
@@ -201,6 +202,30 @@ Windows (.NET Framework 4.8, `csc.exe`), like Aegis. `build.ps1` compiles everyt
 - Arachne's watch list is data (`src\Arachne\arachne.ini`, copied next to the exe), not code:
   Defender's ML flagged a build carrying the list as PWS:MSIL/Stealer. Keep stealer-like file
   names (browser login DBs, token stores, wallets) out of compiled code and tests.
+- The hub manages apps (`src\Olympus\Apps.cs`). `AppRegistry.All()` = the suite's own (`AppInfo.Guardians`,
+  each given an `AppKind` by `AppEntry.KindOf`) + registered programs: `AppRegistry.BuiltInList` (compiled
+  in; entries whose program is missing are dropped) overlaid by the user's `%LOCALAPPDATA%\Olympus\olympus\apps.ini`
+  (same name replaces, `remove = true` hides; suite names can't be taken). Adding a program is one INI
+  section: `exe`/`stop`/`log`/`status`/`icon`/`color`, or `type = launcher` + `command`. Registered
+  programs never run elevated and the elevated helper never reads apps.ini.
+  - On/off per kind (`AppControl.Switch`): Watcher/OnDemand = `off_apps` in olympus.ini (Supervise skips
+    them; Sibyl's hotkey is released); Periodic/Engine = the `\Olympus\<App>` task via the elevated helper
+    `Olympus.exe --task enable|disable|start|stop <App>` (`TaskControl.Elevated`: only those five task
+    names, only from the installed copy; disable also ends the running instance; it records every task's
+    Enabled in ProgramData\Olympus\olympus\tasks.json because the user can't read Cerberus's and Arachne's
+    tasks — Argus/Ark/Athena are read straight from Task Scheduler, which install.ps1 lets the user read);
+    Aegis = `Aegis.exe pause forever` / `resume` (a pause that runs out in 9999, `Overview.PausedForGood`;
+    the engine keeps answering, so DNS never breaks, and Windows' DNS settings are never touched);
+    Startup = Windows' StartupApproved\Run switch for the Run value (`StartupEntry`; Enable writes the Run
+    value from `run_command` only when there's none), which Argus reads and treats switched off as routine.
+  - Start/Stop: watchers via `--watch` / the `<app>.stop` signal, and Stop adds the name to held.txt so the
+    hub doesn't restart it until Start or the next hub start (which clears it); engines via the helper;
+    periodic apps "Run now" (the existing --scan-now / --backup-now / --report); Aegis opens/closes its tray;
+    registered programs start in their own folder and stop with `stop =` args (or `kill`). Every action
+    pokes `Local\Olympus.hub.apps` so the hub re-reads settings and refreshes at once; the CLI
+    (`Olympus.exe apps|enable|disable|start|stop|run NAME`) uses the same `AppControl`.
+  - Switched-off and held apps and launchers don't count towards the overall verdict (`Overview.Overall`).
+    update.ps1 doesn't start an engine whose task is disabled; install.ps1 re-creates the tasks switched on.
 - Guardian tray icons are NotifyIcons owned by the hub (SYSTEM engines run in session 0 and
   can't show icons). They're created at hub start in a fixed order (stable icon IDs, so Windows
   remembers placement) and shown while `AppState.Running`. `pin_icons` sets IsPromoted once per

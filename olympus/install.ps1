@@ -163,7 +163,7 @@ try {
             $lnk.Save()
         }
         $lnk = $shell.CreateShortcut((Join-Path $User.Desktop 'Olympus.lnk'))
-        $lnk.TargetPath = Join-Path $Dest 'Olympus.exe'; $lnk.WorkingDirectory = $Dest; $lnk.IconLocation = (Join-Path $Dest 'Olympus.exe') + ',0'; $lnk.Description = 'Olympus security hub'
+        $lnk.TargetPath = Join-Path $Dest 'Olympus.exe'; $lnk.WorkingDirectory = $Dest; $lnk.IconLocation = (Join-Path $Dest 'Olympus.exe') + ',0'; $lnk.Description = 'Olympus app hub'
         $lnk.Save()
     }
 

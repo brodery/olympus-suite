@@ -1,6 +1,6 @@
-# Olympus Security Suite
+# Olympus
 
-Olympus is a personal security and maintenance hub for 64-bit Windows. It brings together Argus, Sibyl, Janus, Arachne, Athena, Cerberus, Ark, Ares, and Atlas. Aegis provides DNS filtering and comes in the same installer.
+Olympus is a personal app hub for 64-bit Windows: one place to watch, enable, disable, start and stop every app on the PC. It brings together Argus, Sibyl, Janus, Arachne, Athena, Cerberus, Ark, Ares, and Atlas, plus other programs you register in its apps list. Aegis provides DNS filtering and comes in the same installer.
 
 ## Restore on a new PC
 
@@ -29,5 +29,5 @@ Run a newer Setup to update an installed suite. Setup also offers to update Aegi
 
 GitHub Actions builds and verifies the installer when the source changes. Push a new version tag such as `v1.0.1` to publish a fresh installer and checksum under **Releases**. The build bundles the current app code automatically, so ordinary app changes need no installer edits.
 
-- [Olympus and the guardians](olympus/README.md)
+- [Olympus and its apps](olympus/README.md)
 - [Aegis DNS filter](aegis/README.md)

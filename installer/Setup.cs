@@ -99,7 +99,7 @@ internal static class Setup
             explanation.Size = new Size(470, 46);
             explanation.Text = update
                 ? "Update Olympus and its nine apps, including Atlas, using the existing Olympus updater."
-                : "Install the Olympus security hub and its nine apps, including Atlas.";
+                : "Install the Olympus app hub and its nine apps, including Atlas.";
 
             aegis.Location = new Point(20, 75);
             aegis.Size = new Size(470, 24);

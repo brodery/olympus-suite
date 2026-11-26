@@ -418,7 +418,7 @@ namespace Aegis
                     t = status.FallbackRecent ? "Aegis: on (Quad9 down, router answering)"
                         : "Aegis: on, " + status.DayBlocked.ToString("N0", CultureInfo.CurrentCulture) + " blocked today";
                     break;
-                case Shield.Paused: t = "Aegis: paused until " + status.PausedUntilUtc.ToLocalTime().ToString("t", CultureInfo.CurrentCulture); break;
+                case Shield.Paused: t = "Aegis: paused " + Pause.Until(status.PausedUntilUtc); break;
                 case Shield.Idle: t = "Aegis: not in use (Windows DNS isn't set to it)"; break;
                 default: t = "Aegis: engine not answering"; break;
             }
@@ -431,7 +431,7 @@ namespace Aegis
             switch (state)
             {
                 case Shield.On: return "Aegis is filtering";
-                case Shield.Paused: return "Aegis is paused until " + status.PausedUntilUtc.ToLocalTime().ToString("t", CultureInfo.CurrentCulture);
+                case Shield.Paused: return "Aegis is paused " + Pause.Until(status.PausedUntilUtc);
                 case Shield.Idle: return "Aegis isn't in use";
                 default: return "The Aegis engine isn't answering";
             }
@@ -454,6 +454,7 @@ namespace Aegis
             bool running = status != null;
             menu.Items.Add(Item("Pause for 10 minutes", running, () => Notify(Actions.PauseFor(TimeSpan.FromMinutes(10)))));
             menu.Items.Add(Item("Pause for 1 hour", running, () => Notify(Actions.PauseFor(TimeSpan.FromHours(1)))));
+            menu.Items.Add(Item("Pause until I turn it back on", running, () => Notify(Actions.PauseForever())));
             menu.Items.Add(Item("Resume filtering", running && status.Paused, () => Notify(Actions.Resume())));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(Item("Update blocklists now", running, () => Notify(Actions.Update())));
@@ -939,7 +940,7 @@ namespace Aegis
                     stateText.Text = "Aegis is filtering";
                     break;
                 case Shield.Paused:
-                    stateText.Text = "Paused until " + st.PausedUntilUtc.ToLocalTime().ToString("t", CultureInfo.CurrentCulture);
+                    stateText.Text = "Paused " + Pause.Until(st.PausedUntilUtc);
                     break;
                 case Shield.Idle:
                     stateText.Text = "Not in use";
@@ -1014,6 +1015,7 @@ namespace Aegis
             "  Aegis.exe block NAME      always block NAME and its subdomains\n" +
             "  Aegis.exe unallow NAME | unblock NAME\n" +
             "  Aegis.exe pause [MIN]     stop filtering for a while (default 10 minutes)\n" +
+            "  Aegis.exe pause forever   stop filtering until you resume (DNS keeps working)\n" +
             "  Aegis.exe resume          filter again now\n" +
             "  Aegis.exe update          download fresh blocklists now\n" +
             "From PowerShell, add | Out-String so the output waits for the command.";
@@ -1055,6 +1057,11 @@ namespace Aegis
                 case "unallow": return WithDomain(arg, Actions.Unallow);
                 case "unblock": return WithDomain(arg, Actions.Unblock);
                 case "pause":
+                    if (arg != null && (arg.Equals("forever", StringComparison.OrdinalIgnoreCase) || arg.Equals("off", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        Console.WriteLine(Actions.PauseForever());
+                        return 0;
+                    }
                     int minutes = arg == null ? 10 : int.Parse(arg, CultureInfo.InvariantCulture);
                     Console.WriteLine(Actions.PauseFor(TimeSpan.FromMinutes(Math.Max(1, Math.Min(minutes, 24 * 60)))));
                     return 0;
@@ -1087,7 +1094,7 @@ namespace Aegis
             var st = EngineStatus.Fetch(1500);
             Console.WriteLine(App.Title + " " + App.Version + " in " + App.Dir);
             if (st == null) Console.WriteLine("Engine:   NOT answering on 127.0.0.1:53");
-            else Console.WriteLine("Engine:   " + (st.Paused ? "PAUSED until " + st.PausedUntilUtc.ToLocalTime().ToString("t", CultureInfo.CurrentCulture) : "filtering")
+            else Console.WriteLine("Engine:   " + (st.Paused ? "PAUSED " + Pause.Until(st.PausedUntilUtc) : "filtering")
                 + ", running for " + Fmt.Ago(TimeSpan.FromSeconds(st.Uptime)));
             bool? uses = NetInfo.WindowsUsesAegis();
             if (uses == true) Console.WriteLine("Windows:  sends its lookups to Aegis");

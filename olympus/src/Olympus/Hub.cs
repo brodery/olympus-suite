@@ -1,6 +1,7 @@
-// Olympus.exe: the one tray icon for the whole suite. It reads every guardian's status and
-// alerts, shows pop-ups (held while you're gaming), keeps Janus and Ares running, owns the
-// "check this link" hotkey, re-runs Athena's report card daily, and opens the dashboard.
+// Olympus.exe: the app hub. One tray icon for every app on this PC: it reads each app's status
+// and alerts, shows pop-ups (held while you're gaming), switches apps on and off and starts and
+// stops them, keeps Janus, Ares and Atlas running, owns the "check this link" hotkey, re-runs
+// Athena's report card daily, and opens the dashboard.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -18,8 +19,14 @@ namespace Olympus.Hub
         {
             var a = new Args(args);
             string first = (a.First ?? "").ToLowerInvariant();
-            bool cli = first == "status" || first == "alerts" || first == "help" || first == "--help" || first == "/?";
-            AppStart.Init(AppId.Olympus, !cli);
+            bool cli = HubCli.IsCommand(first);
+            AppStart.Init(AppId.Olympus, !cli && first != "--task");
+            // the elevated helper that switches the suite's own scheduled tasks (one UAC prompt per click)
+            if (first == "--task")
+            {
+                Cli.Attach();
+                return TaskControl.Elevated(a[1], a[2]);
+            }
             if (cli)
             {
                 Cli.Attach();
@@ -52,13 +59,55 @@ namespace Olympus.Hub
     static class HubCli
     {
         const string Help =
-            "Olympus security hub - commands:\n" +
-            "  Olympus.exe              open the dashboard (starts the tray icon if needed)\n" +
-            "  Olympus.exe --tray       start just the tray icon (used at sign-in)\n" +
-            "  Olympus.exe --exit       close the tray icon\n" +
-            "  Olympus.exe status       how every guardian is doing\n" +
-            "  Olympus.exe alerts [N]   the newest N alerts you haven't dismissed (default 20)\n" +
+            "Olympus app hub - commands:\n" +
+            "  Olympus.exe                open the dashboard (starts the tray icon if needed)\n" +
+            "  Olympus.exe --tray         start just the tray icon (used at sign-in)\n" +
+            "  Olympus.exe --exit         close the tray icon\n" +
+            "  Olympus.exe status         how every app is doing\n" +
+            "  Olympus.exe apps           every app: kind, on/off, running, details\n" +
+            "  Olympus.exe enable NAME    switch an app on (it stays on after a restart)\n" +
+            "  Olympus.exe disable NAME   switch an app off\n" +
+            "  Olympus.exe start NAME     start an app now (or run a launcher)\n" +
+            "  Olympus.exe stop NAME      stop an app now\n" +
+            "  Olympus.exe run NAME       run a launcher\n" +
+            "  Olympus.exe alerts [N]     the newest N alerts you haven't dismissed (default 20)\n" +
+            "Names with spaces go in quotes. Your own apps go in apps.ini (" + "%LOCALAPPDATA%\\Olympus\\olympus\\apps.ini).\n" +
+            "Argus, Ark, Athena, Cerberus and Arachne run as SYSTEM: switching them asks for admin rights.\n" +
             "From PowerShell, add | Out-String so the output waits for the command.";
+
+        public static bool IsCommand(string first)
+        {
+            switch (first)
+            {
+                case "status": case "alerts": case "apps": case "enable": case "disable": case "start": case "stop": case "run":
+                case "help": case "--help": case "/?":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // What a successful action did, in words (the window's status bar uses it too).
+        public static string Done(string verb, AppEntry e)
+        {
+            switch (verb)
+            {
+                case "enable": return e.Name + " is on: " + e.OnMeaning + ".";
+                case "disable":
+                    if (e.Kind == AppKind.Aegis) return "Aegis is off: it still answers DNS but blocks nothing until you enable it.";
+                    if (e.Kind == AppKind.Startup) return e.Name + " is off: it won't start when you sign in" + (Proc.Running(e.Exe) ? " (it's still open now; Stop closes it)." : ".");
+                    return e.Name + " is off.";
+                case "stop":
+                    if (e.Kind == AppKind.Watcher) return "Stopped " + e.Name + " until you start it again (or Olympus restarts, as it does at sign-in).";
+                    if (e.Kind == AppKind.Aegis) return "Closed Aegis's tray icon. Filtering carries on.";
+                    return "Stopped " + e.Name + ".";
+                case "run": return "Started " + e.Name + ".";
+                default:
+                    if (e.Kind == AppKind.Periodic) return "Asked " + e.Name + " to run now.";
+                    if (e.Kind == AppKind.Aegis) return "Opened Aegis's tray icon.";
+                    return "Started " + e.Name + ".";
+            }
+        }
 
         static string Word(string sev)
         {
@@ -73,8 +122,8 @@ namespace Olympus.Hub
                 {
                     var states = Overview.Collect();
                     var rows = new List<string[]> { new[] { "APP", "STATE", "SUMMARY", "REPORTED" } };
-                    foreach (var s in states)
-                        rows.Add(new[] { s.App.Name, s.State, s.Summary, s.App.Id == AppId.Aegis || s.Updated == DateTime.MinValue ? "-" : Fmt.Ago(s.Updated) });
+                    foreach (var s in states.Where(x => x.Entry.Kind != AppKind.Launcher))
+                        rows.Add(new[] { s.Name, s.State, s.Summary, !s.Entry.IsSuite || s.App.Id == AppId.Aegis || s.Updated == DateTime.MinValue ? "-" : Fmt.Ago(s.Updated) });
                     Cli.Table(rows);
                     string text;
                     Overview.Overall(states, Inbox.Count(), out text);
@@ -92,6 +141,36 @@ namespace Olympus.Hub
                         Cli.Out(Fmt.Local(al.TimeUtc).PadRight(18) + " " + (al.App ?? "").PadRight(9) + " " + Word(al.Severity).PadRight(9) + " " + al.Title);
                     return 0;
                 }
+                case "apps":
+                {
+                    var rows = new List<string[]> { new[] { "APP", "KIND", "ON", "RUNNING", "STATE", "SUMMARY" } };
+                    foreach (var s in Overview.Collect())
+                        rows.Add(new[] { s.Name, s.Entry.KindWord, s.OnWord, s.RunWord, s.State, s.Summary });
+                    Cli.Table(rows);
+                    return 0;
+                }
+                case "enable": case "disable": case "start": case "stop": case "run":
+                {
+                    string verb = a.First.ToLowerInvariant();
+                    var e = AppRegistry.Find(a.Rest(1).Trim('"'));
+                    if (e == null) { Cli.Out("No app called \"" + a.Rest(1) + "\". Olympus.exe apps lists them."); return 2; }
+                    string err;
+                    if (verb == "enable" || verb == "disable")
+                    {
+                        if (!e.CanSwitch) { Cli.Out(e.Name + " is a launcher: it runs only when asked (Olympus.exe run \"" + e.Name + "\")."); return 2; }
+                        err = AppControl.Switch(e, verb == "enable");
+                    }
+                    else if (verb == "stop")
+                    {
+                        if (!e.HasStop) { Cli.Out(e.Name + " doesn't stay running, so there's nothing to stop" + (e.CanSwitch ? " (disable switches it off)." : ".")); return 2; }
+                        err = AppControl.Stop(e);
+                    }
+                    else err = verb == "run" ? AppControl.Run(e) : AppControl.Start(e);
+                    Sync.Poke(AppControl.ChangedSignal);
+                    if (err != null) { Cli.Out(err); return 1; }
+                    Cli.Out(Done(verb, e));
+                    return 0;
+                }
                 default:
                     Cli.Out(Help);
                     return 0;
@@ -106,8 +185,9 @@ namespace Olympus.Hub
         readonly Control invoker = new Control();
         readonly System.Windows.Forms.Timer fast = new System.Windows.Forms.Timer { Interval = 2000 };
         readonly System.Windows.Forms.Timer slow = new System.Windows.Forms.Timer { Interval = 15000 };
-        readonly HubSettings settings = HubSettings.Load();
+        HubSettings settings = HubSettings.Load();
         readonly HotkeyWindow hotkey = new HotkeyWindow();
+        ToolStripMenuItem appsMenu, runMenu;
         readonly List<AlertInfo> pending = new List<AlertInfo>(), held = new List<AlertInfo>();
         readonly Dictionary<AppId, WatchInfo> watchers = new Dictionary<AppId, WatchInfo>();
         readonly Dictionary<Badge, Icon> icons = new Dictionary<Badge, Icon>();
@@ -121,8 +201,9 @@ namespace Olympus.Hub
         ToolStripMenuItem quietItem, gameItem;
         string overallState = States.Off, overallText = "Starting…";
 
-        // One tray icon per guardian while it runs, created up front in a fixed order so Windows
-        // keeps each icon's place and "show on taskbar" choice between sign-ins. Aegis has its own.
+        // One tray icon per Olympus app while it runs, created up front in a fixed order so Windows
+        // keeps each icon's place and "show on taskbar" choice between sign-ins. Aegis and the
+        // registered apps have their own.
         // (new guardians go at the end so the existing icons keep their places)
         static readonly AppId[] IconOrder = { AppId.Argus, AppId.Sibyl, AppId.Janus, AppId.Arachne, AppId.Athena, AppId.Cerberus, AppId.Ark, AppId.Ares, AppId.Atlas };
         readonly Dictionary<AppId, NotifyIcon> guardianIcons = new Dictionary<AppId, NotifyIcon>();
@@ -157,8 +238,11 @@ namespace Olympus.Hub
             tray.Visible = true;
             CreateGuardianIcons();
 
+            // a watcher stopped by hand stays stopped until you start it or sign in again (the hub starts at sign-in)
+            Held.Clear();
             ListenFor("hub.show", ShowDashboard);
             ListenFor("hub.exit", ExitThread);
+            ListenFor(AppControl.ChangedSignal, AppsChanged);
             ListenFor(AlertReview.ChangedSignal, () =>
             {
                 if (AlertsArrived != null) AlertsArrived();
@@ -166,7 +250,7 @@ namespace Olympus.Hub
             });
             PrimeOffsets();
             hotkey.Pressed += CheckClipboard;
-            if (!hotkey.Register(settings.Hotkey)) Log.Warn("couldn't register the hotkey " + settings.Hotkey + " (another app may use it)");
+            ApplyHotkey();
 
             fast.Tick += (s, e) => FastTick();
             slow.Tick += (s, e) => SlowTick();
@@ -175,6 +259,29 @@ namespace Olympus.Hub
             SlowTick();
             Log.Info("hub started");
             if (openDashboard) ShowDashboard();
+        }
+
+        // Sibyl's hotkey belongs to the hub while Sibyl is switched on.
+        void ApplyHotkey()
+        {
+            bool want = !settings.IsOff(AppInfo.Of(AppId.Sibyl).Name);
+            if (want && !hotkey.Registered)
+            {
+                if (!hotkey.Register(settings.Hotkey)) Log.Warn("couldn't register the hotkey " + settings.Hotkey + " (another app may use it)");
+            }
+            else if (!want && hotkey.Registered)
+            {
+                hotkey.Unregister();
+                Log.Info("let go of the hotkey " + settings.Hotkey + " (Sibyl is switched off)");
+            }
+        }
+
+        // An app was switched on or off, started or stopped (here, from the window or from the command line).
+        void AppsChanged()
+        {
+            try { settings = HubSettings.Load(); } catch (Exception e) { Log.Error("re-reading settings", e); }
+            ApplyHotkey();
+            SlowTick();
         }
 
         void ListenFor(string name, Action action)
@@ -208,6 +315,11 @@ namespace Olympus.Hub
                 var id = app.Id;
                 menu.Items.Add(new ToolStripMenuItem(app.Name + "  —  " + app.Role, IconArt.Draw(app.Id, Ui.S(16)), (s, e) => Launch.Open(id, null)));
             }
+            // the registered apps and launchers, refreshed each time the menu opens
+            appsMenu = new ToolStripMenuItem("More apps");
+            runMenu = new ToolStripMenuItem("Run");
+            menu.Items.Add(appsMenu);
+            menu.Items.Add(runMenu);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Check a link or message  (" + settings.Hotkey + ")", null, (s, e) => CheckClipboard()));
             menu.Items.Add(new ToolStripMenuItem("Back up now", null, (s, e) => Launch.Command(AppId.Ark, "--backup-now")));
@@ -223,10 +335,77 @@ namespace Olympus.Hub
             {
                 quietItem.Text = Inbox.Quiet ? "Pop-ups back on" : "Quiet pop-ups for 1 hour";
                 gameItem.Checked = GameState.Playing;
+                FillAppMenus();
             };
         }
 
-        void CheckClipboard() { Launch.Command(AppId.Sibyl, "--clipboard"); }
+        readonly Dictionary<string, Bitmap> menuPictures = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
+        Bitmap MenuPicture(AppEntry e)
+        {
+            Bitmap b;
+            if (!menuPictures.TryGetValue(e.Name, out b)) menuPictures[e.Name] = b = AppRegistry.Picture(e, Ui.S(16));
+            return b;
+        }
+
+        // Registered apps: ticked while open; click to start one, or to stop it when it's open.
+        // Launchers: click to run.
+        void FillAppMenus()
+        {
+            List<AppEntry> all;
+            try { all = AppRegistry.All().Where(x => !x.IsSuite).ToList(); }
+            catch (Exception e) { Log.Error("reading apps.ini", e); all = new List<AppEntry>(); }
+            appsMenu.DropDownItems.Clear();
+            runMenu.DropDownItems.Clear();
+            foreach (var x in all)
+            {
+                var entry = x;
+                if (entry.Kind == AppKind.Launcher)
+                {
+                    runMenu.DropDownItems.Add(new ToolStripMenuItem(entry.Name + (entry.Role.Length > 0 ? "  —  " + entry.Role : ""), MenuPicture(entry), (s, e) => RunFromMenu(entry)));
+                    continue;
+                }
+                bool open = File.Exists(entry.Exe) && Proc.Running(entry.Exe);
+                var it = new ToolStripMenuItem(entry.Name + (entry.Role.Length > 0 ? "  —  " + entry.Role : ""), MenuPicture(entry), (s, e) => ToggleFromMenu(entry, open));
+                it.Checked = open;
+                it.ToolTipText = open ? "Open. Click to stop it." : "Click to start it.";
+                appsMenu.DropDownItems.Add(it);
+            }
+            appsMenu.Visible = appsMenu.DropDownItems.Count > 0;
+            runMenu.Visible = runMenu.DropDownItems.Count > 0;
+        }
+
+        void RunFromMenu(AppEntry e)
+        {
+            if (e.Confirm != null && MessageBox.Show(e.Confirm, "Olympus — " + e.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string err = AppControl.Run(e);
+                if (err != null) invoker.BeginInvoke((Action)(() => tray.ShowBalloonTip(8000, "Couldn't run " + e.Name, Fmt.Clip(err, 250), ToolTipIcon.Warning)));
+            });
+        }
+
+        void ToggleFromMenu(AppEntry e, bool open)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string err = open ? AppControl.Stop(e) : AppControl.Start(e);
+                invoker.BeginInvoke((Action)(() =>
+                {
+                    if (err != null) tray.ShowBalloonTip(8000, "Olympus: " + e.Name, Fmt.Clip(err, 250), ToolTipIcon.Warning);
+                    SlowTick();
+                }));
+            });
+        }
+
+        void CheckClipboard()
+        {
+            if (settings.IsOff(AppInfo.Of(AppId.Sibyl).Name))
+            {
+                tray.ShowBalloonTip(5000, "Sibyl is switched off", "Enable it on Olympus's Apps tab to check links again.", ToolTipIcon.Info);
+                return;
+            }
+            Launch.Command(AppId.Sibyl, "--clipboard");
+        }
 
         // ------------------------------------------------------------------ a tray icon per guardian
 
@@ -289,7 +468,7 @@ namespace Olympus.Hub
             foreach (var st in states)
             {
                 NotifyIcon ni;
-                if (!guardianIcons.TryGetValue(st.App.Id, out ni)) continue;
+                if (st.App == null || !guardianIcons.TryGetValue(st.App.Id, out ni)) continue;
                 bool show = settings.GuardianIcons && st.Running && !settings.Hidden.Contains(st.App.Name, StringComparer.OrdinalIgnoreCase);
                 if (show)
                 {
@@ -495,12 +674,14 @@ namespace Olympus.Hub
             UpdateGuardianIcons();
         }
 
-        // Janus and Ares run in your session; start them if they're not running (but stop
-        // trying for a while if one keeps stopping).
+        // Janus, Ares and Atlas run in your session; start them if they're not running (but stop
+        // trying for a while if one keeps stopping). Ones you switched off or stopped are left alone.
         void Supervise()
         {
+            var held = Held.Read();
             foreach (var app in AppInfo.All.Where(x => x.Watcher))
             {
+                if (settings.IsOff(app.Name) || held.Contains(app.Name)) continue;
                 string exe = Suite.ExeOf(app.Id);
                 if (!File.Exists(exe) || Proc.Running(exe)) continue;
                 WatchInfo w;
@@ -522,6 +703,7 @@ namespace Olympus.Hub
         {
             if (DateTime.UtcNow - started < TimeSpan.FromMinutes(3) || DateTime.UtcNow - lastAthena < TimeSpan.FromHours(1)) return;
             if (!File.Exists(Suite.ExeOf(AppId.Athena))) return;
+            if (states.Any(x => x.App != null && x.App.Id == AppId.Athena && x.Off)) return;   // switched off on the Apps tab
             var s = J.Load<StatusInfo>(Path.Combine(Suite.UserDir(AppId.Athena), StatusStore.FileName));
             if (s != null && DateTime.UtcNow - s.UpdatedUtc < TimeSpan.FromHours(settings.AthenaHours)) return;
             lastAthena = DateTime.UtcNow;
@@ -549,6 +731,7 @@ namespace Olympus.Hub
         public event Action Pressed;
         bool registered;
         public HotkeyWindow() { CreateHandle(new CreateParams()); }
+        public bool Registered { get { return registered; } }
 
         public bool Register(string spec)
         {
@@ -556,6 +739,12 @@ namespace Olympus.Hub
             if (!Parse(spec, out mods, out vk)) return false;
             registered = Native.RegisterHotKey(Handle, 1, mods | 0x4000 /* no repeat */, vk);
             return registered;
+        }
+
+        public void Unregister()
+        {
+            if (registered) { try { Native.UnregisterHotKey(Handle, 1); } catch (Exception) { } }
+            registered = false;
         }
 
         public static bool Parse(string spec, out uint mods, out uint vk)
